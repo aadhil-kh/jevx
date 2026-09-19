@@ -56,11 +56,11 @@
     const { hasApiKey, enabled, lastErrorCode } = response.settings;
     enabledToggle.checked = enabled !== false;
     if (hasApiKey) {
-      keyInput.placeholder = "API key saved for this browser session";
+      keyInput.placeholder = "API key saved on this device (encrypted)";
       if (lastErrorCode === "AUTH") {
         setStatus("The saved key was rejected. Enter a new one.", "err");
       } else {
-        setStatus("API key saved for this browser session.", "ok");
+        setStatus("API key saved, encrypted at rest on this device.", "ok");
       }
     } else if (lastErrorCode === "AUTH") {
       setStatus("The last key used was rejected by TypeSafe.", "err");
@@ -83,8 +83,12 @@
     saveButton.textContent = "Save & Test";
     keyInput.value = "";
     if (response && response.ok) {
-      keyInput.placeholder = "API key saved for this browser session";
-      setStatus("Connected to TypeSafe for this browser session.", "ok");
+      keyInput.placeholder = "API key saved on this device (encrypted)";
+      if (response.persisted === false) {
+        setStatus("Key saved for this session only — encrypted storage is unavailable.", "err");
+      } else {
+        setStatus("Connected to TypeSafe. Key saved encrypted at rest.", "ok");
+      }
     } else {
       const code = response && response.error ? response.error.code : "NETWORK";
       setStatus(FRIENDLY_ERRORS[code] || "Could not verify the key.", "err");

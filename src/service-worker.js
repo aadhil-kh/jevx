@@ -1,15 +1,22 @@
 /**
  * jevx: Manifest V3 service worker.
  *
- * Owns: storage access + hardening, the session-scoped TypeSafe API key, raw
- * TypeSafe HTTPS requests (timeout / retry / validation), the persistent
- * classification cache, popup control messages, and the action-badge error
- * state.
+ * Owns: storage access + hardening, the TypeSafe API key (persisted encrypted
+ * at rest), raw TypeSafe HTTPS requests (timeout / retry / validation), the
+ * persistent classification cache, popup control messages, and the
+ * action-badge error state.
  *
  * Security model:
- * - The API key lives only in chrome.storage.session, restricted to trusted
+ * - The API key is persisted encrypted at rest: an AES-GCM ciphertext in
+ *   chrome.storage.local, sealed by a non-extractable CryptoKey that is
+ *   persisted through the extension's IndexedDB (Chrome keeps such key
+ *   material in its internal, OS-protected key store). At runtime the
+ *   plaintext key lives only in chrome.storage.session, restricted to trusted
  *   extension contexts. The X content script never receives it; it only sends
  *   classification requests and receives normalized results.
+ * - This defends the at-rest record against storage inspection; it is not a
+ *   hardware vault. No in-browser scheme protects a key from an attacker with
+ *   full control of the browser profile.
  * - Content-script input is untrusted. Every message is validated per message
  *   type: classification messages must come from an allowed X page, while
  *   popup/control messages must come from this extension's own pages.
@@ -48,8 +55,20 @@ const CACHE_MAX_ENTRIES = 500;
 
 const SETTINGS_STORAGE_KEY = "jevxSettings";
 const API_KEY_STORAGE_KEY = "jevxTypesafeApiKey";
+const PERSISTENT_KEY_STORAGE_KEY = "jevxTypesafeApiKeyEncrypted";
 const AUTH_FAILURE_AT_KEY = "jevxAuthFailureAt";
 const AUTH_COOLDOWN_MS = 60000; // fail fast after an auth failure instead of hammering the same bad key
+
+// Encrypted-at-rest key persistence. The AES-GCM ciphertext lives in
+// chrome.storage.local; the sealing key is a non-extractable CryptoKey
+// persisted through this extension's IndexedDB. Chrome stores CryptoKey
+// material in its internal key store (OS-protected where the platform
+// provides it, e.g. Keychain on macOS), and the raw bytes never become
+// readable from JavaScript.
+const KEY_DB_NAME = "jevx";
+const KEY_DB_VERSION = 1;
+const KEY_STORE_NAME = "keys";
+const ENCRYPTION_KEY_RECORD_ID = "typesafeApiEncryptionKey";
 
 const ACCEPTED_LABELS = ["positive", "neutral", "negative"];
 const ALLOWED_CONTENT_HOST = "x.com";
@@ -142,10 +161,166 @@ async function updateSettings(patch) {
   return next;
 }
 
+// The plaintext key is the only value that lives in chrome.storage.session
+// (memory-only, trusted contexts). Whenever that copy is empty (browser
+// restart, extension reload), it is transparently re-derived by decrypting the
+// persistent record. A single-flight guard avoids concurrent duplicate unlocks.
+let unlockPromise = null;
+
 async function getApiKey() {
   const store = await chrome.storage.session.get(API_KEY_STORAGE_KEY);
-  const key = store[API_KEY_STORAGE_KEY];
-  return typeof key === "string" && key.length > 0 ? key : null;
+  const sessionKey = store[API_KEY_STORAGE_KEY];
+  if (typeof sessionKey === "string" && sessionKey.length > 0) return sessionKey;
+  if (!unlockPromise) {
+    unlockPromise = unlockPersistedApiKey()
+      .catch((e) => {
+        console.warn("[jevx] could not unlock the saved API key:", e instanceof Error ? e.message : e);
+        return null;
+      })
+      .finally(() => {
+        unlockPromise = null;
+      });
+  }
+  return unlockPromise;
+}
+
+/* ------------------------------------------------------------------ *
+ * Encrypted-at-rest key persistence
+ * ------------------------------------------------------------------ */
+
+// Own base64 codec (btoa/atob are not guaranteed in every worker context and
+// not present in the Node VM the tests run in).
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function bytesToBase64(bytes) {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += BASE64_ALPHABET[b0 >> 2];
+    out += BASE64_ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)];
+    out += i + 1 < bytes.length ? BASE64_ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] : "=";
+    out += i + 2 < bytes.length ? BASE64_ALPHABET[b2 & 0x3f] : "=";
+  }
+  return out;
+}
+
+function base64ToBytes(text) {
+  const clean = text.replace(/=+$/, "");
+  const bytes = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  let acc = 0;
+  let bits = 0;
+  let index = 0;
+  for (const char of clean) {
+    const value = BASE64_ALPHABET.indexOf(char);
+    if (value === -1) throw new Error("Invalid base64 input.");
+    acc = (acc << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes[index] = (acc >> bits) & 0xff;
+      index += 1;
+    }
+  }
+  return bytes;
+}
+
+function openKeyDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(KEY_DB_NAME, KEY_DB_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(KEY_STORE_NAME)) {
+        request.transaction.createObjectStore(KEY_STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Could not open the jevx key database."));
+  });
+}
+
+async function withKeyStore(mode, run) {
+  const db = await openKeyDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(KEY_STORE_NAME, mode);
+    const request = run(tx.objectStore(KEY_STORE_NAME));
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Key store operation failed."));
+    tx.onabort = () => reject(tx.error || new Error("Key store transaction aborted."));
+  });
+}
+
+// Duck-typed on purpose: a vm-sandboxed CryptoKey need not be instanceof the
+// host realm's CryptoKey for the tests to exercise this path.
+function isUsableAesKey(candidate) {
+  return (
+    !!candidate &&
+    typeof candidate === "object" &&
+    !!candidate.algorithm &&
+    candidate.algorithm.name === "AES-GCM" &&
+    Array.isArray(candidate.usages) &&
+    candidate.usages.includes("encrypt") &&
+    candidate.usages.includes("decrypt")
+  );
+}
+
+async function getEncryptionKey() {
+  const record = await withKeyStore("readonly", (store) => store.get(ENCRYPTION_KEY_RECORD_ID));
+  if (record && isUsableAesKey(record.key)) return record.key;
+  return null;
+}
+
+async function createEncryptionKey() {
+  const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  await withKeyStore("readwrite", (store) => store.put({ id: ENCRYPTION_KEY_RECORD_ID, key }, ENCRYPTION_KEY_RECORD_ID));
+  return key;
+}
+
+async function getOrCreateEncryptionKey() {
+  return (await getEncryptionKey()) || (await createEncryptionKey());
+}
+
+async function deleteEncryptionKey() {
+  try {
+    await withKeyStore("readwrite", (store) => store.delete(ENCRYPTION_KEY_RECORD_ID));
+  } catch (e) {
+    /* best effort: the ciphertext is already gone, so a leftover key decrypts nothing */
+  }
+}
+
+async function persistApiKey(apiKey) {
+  const key = await getOrCreateEncryptionKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(apiKey))
+  );
+  await chrome.storage.local.set({
+    [PERSISTENT_KEY_STORAGE_KEY]: {
+      v: 1,
+      iv: bytesToBase64(iv),
+      ciphertext: bytesToBase64(ciphertext),
+      updatedAt: Date.now(),
+    },
+  });
+}
+
+async function unlockPersistedApiKey() {
+  const store = await chrome.storage.local.get(PERSISTENT_KEY_STORAGE_KEY);
+  const record = store[PERSISTENT_KEY_STORAGE_KEY];
+  if (!record || record.v !== 1 || typeof record.iv !== "string" || typeof record.ciphertext !== "string") {
+    return null;
+  }
+  const key = await getEncryptionKey();
+  if (!key) return null;
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(record.iv) },
+    key,
+    base64ToBytes(record.ciphertext)
+  );
+  const apiKey = new TextDecoder().decode(plaintext);
+  if (!apiKey) return null;
+  await chrome.storage.session.set({ [API_KEY_STORAGE_KEY]: apiKey });
+  return apiKey;
 }
 
 /* ------------------------------------------------------------------ *
@@ -519,9 +694,18 @@ async function handleSaveAndTestKey(message, sender) {
       throw new ApiError("INVALID_RESPONSE", "TypeSafe returned an unexpected result shape.", false);
     }
     await chrome.storage.session.set({ [API_KEY_STORAGE_KEY]: apiKey });
+    // Persistence is best-effort: if IndexedDB/WebCrypto is unavailable, the
+    // key still works for this browser session and the popup says so.
+    let persisted = true;
+    try {
+      await persistApiKey(apiKey);
+    } catch (e) {
+      persisted = false;
+      console.warn("[jevx] encrypted persistence unavailable; session-only key:", e instanceof Error ? e.message : e);
+    }
     await clearAuthFailure();
     await updateSettings({ lastErrorCode: null });
-    return { ok: true, model: validated.model };
+    return { ok: true, model: validated.model, persisted };
   } catch (e) {
     const error = e instanceof ApiError ? e : new ApiError("API", "Unexpected TypeSafe failure.", false);
     if (error.code === "AUTH") await markAuthFailure();
@@ -534,6 +718,8 @@ async function handleSaveAndTestKey(message, sender) {
 async function handleClearKey(sender) {
   if (!isFromExtensionPage(sender)) return errorResponse("INVALID_REQUEST", "Sender is not an extension page.");
   await chrome.storage.session.remove(API_KEY_STORAGE_KEY);
+  await chrome.storage.local.remove(PERSISTENT_KEY_STORAGE_KEY);
+  await deleteEncryptionKey();
   await clearAuthFailure();
   return { ok: true };
 }
@@ -585,6 +771,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  * Startup
  * ------------------------------------------------------------------ */
 
-chrome.runtime.onStartup.addListener(hardenStorage);
-chrome.runtime.onInstalled.addListener(hardenStorage);
-hardenStorage();
+async function warmUp() {
+  await hardenStorage();
+  // Pre-unlock the persisted key into session memory so the first
+  // classification after a browser restart does not pay the unlock cost.
+  await getApiKey();
+}
+
+chrome.runtime.onStartup.addListener(warmUp);
+chrome.runtime.onInstalled.addListener(warmUp);
+warmUp();

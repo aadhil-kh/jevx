@@ -38,8 +38,8 @@
         TypeSafe AI for sentiment classification. No developer server is used.
       </p>
       <p>
-        The key is stored only for the current browser session and is cleared when Chrome
-        fully restarts, so you may need to enter it again.
+        The key is stored encrypted at rest on this device (AES-GCM) and stays available across
+        Chrome restarts. The plaintext key only ever lives in browser memory, never on disk.
       </p>
     </footer>
   </main>

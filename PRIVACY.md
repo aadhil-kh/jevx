@@ -1,6 +1,6 @@
 # Privacy Policy: jevx
 
-_Last updated: 2026-09-18_
+_Last updated: 2026-09-19_
 
 This extension reads visible website/user-generated content and sends tweet text to a third-party service to provide its feature. Even though the developer has no backend and receives none of the data, the extension transmits website/user-generated content to TypeSafe AI.
 
@@ -16,15 +16,17 @@ This extension reads visible website/user-generated content and sends tweet text
 
 ## What is stored
 
-- **Session data:** the TypeSafe API key is kept in `chrome.storage.session`. It is authentication information and is treated as sensitive user data. It is used only for TypeSafe authentication and is never sent to X or to the developer.
-- **API key lifetime:** intentionally cleared when the Chrome session ends (full browser restart). `chrome.storage` is not an encrypted secret vault, and no stronger claim is made.
+- **In-memory data:** while the extension is running, the plaintext TypeSafe API key is kept in `chrome.storage.session`. It is authentication information and is treated as sensitive user data. It is used only for TypeSafe authentication and is never sent to X or to the developer.
+- **Persistent encrypted record:** the API key is also stored encrypted at rest in `chrome.storage.local` as an AES-GCM ciphertext. The sealing key is a non-extractable `CryptoKey` persisted through the extension's IndexedDB; Chrome keeps such key material in its internal, OS-protected key store (for example, Keychain on macOS), and the raw key bytes are never exposed to JavaScript.
+- **API key lifetime:** the key persists across Chrome restarts until it is cleared via the popup (**Clear key**) or the extension is uninstalled.
+- **Plaintext exposure:** the plaintext key exists only in trusted extension contexts (service worker and popup) and in memory. It never reaches the X content script, the page DOM, logs, or any disk file.
+- **Honest limits:** client-side encryption defends the stored record against storage inspection, but extensions have no hardware-backed vault. An attacker with full control of the browser profile could potentially recover the key. No stronger claim is made.
 - **Persistent local data:** the enabled/disabled setting, small non-sensitive settings, and a small classification-result cache in `chrome.storage.local`.
 - **Cache contents:** versioned identifiers/fingerprints and classification results only, never tweet text and never the API key.
-- **API key exposure:** the key exists only in trusted extension contexts (service worker and popup). It never reaches the X content script, the page DOM, logs, or anywhere else.
 
 ## Deletion
 
-- **Clear key** (popup) removes the stored API key.
+- **Clear key** (popup) removes every copy of the API key: the in-memory plaintext, the encrypted-at-rest record, and the encryption key material itself.
 - **Clear cached classifications** (popup) removes the result cache.
 - Clearing extension storage or uninstalling the extension removes all applicable local extension data.
 

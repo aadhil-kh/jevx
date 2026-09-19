@@ -1,8 +1,10 @@
 // Behavioral smoke test for the jevx service worker.
-// Runs src/service-worker.js in a VM with stubbed chrome.* and fetch.
+// Runs src/service-worker.js in a VM with stubbed chrome.*, fetch, and
+// IndexedDB, plus Node's real webcrypto (so AES-GCM actually runs).
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { webcrypto } from "node:crypto";
 
 const SW_PATH = new URL("../src/service-worker.js", import.meta.url).pathname;
 const CONTENT_PATH = new URL("../src/content.js", import.meta.url).pathname;
@@ -58,6 +60,58 @@ const VALID_BODY = {
   usage: { input_tokens: 0, output_tokens: 0 },
 };
 
+/* ---------- fake IndexedDB (in-memory, event-compatible enough) ---------- */
+
+function makeFakeIndexedDB() {
+  const stores = new Map(); // store name -> Map(key -> value)
+  let currentVersion = 0;
+  const fire = (compute) => {
+    const request = {};
+    queueMicrotask(() => {
+      try {
+        request.result = compute();
+        if (request.onsuccess) request.onsuccess();
+      } catch (e) {
+        request.error = e;
+        if (request.onerror) request.onerror();
+      }
+    });
+    return request;
+  };
+  const db = {
+    objectStoreNames: { contains: (name) => stores.has(name) },
+    transaction(storeName) {
+      const store = stores.get(storeName);
+      return {
+        objectStore: () => ({
+          get: (key) => fire(() => store.get(key)),
+          put: (value, key) => fire(() => store.set(key, value)),
+          delete: (key) => fire(() => store.delete(key)),
+        }),
+      };
+    },
+  };
+  return {
+    _stores: stores,
+    open(name, version) {
+      const request = {};
+      queueMicrotask(() => {
+        request.result = db;
+        if (version > currentVersion) {
+          currentVersion = version;
+          request.transaction = { createObjectStore: (storeName) => stores.set(storeName, new Map()) };
+          if (request.onupgradeneeded) request.onupgradeneeded();
+          request.transaction = undefined;
+        }
+        if (request.onsuccess) request.onsuccess();
+      });
+      return request;
+    },
+  };
+}
+
+const idbStub = makeFakeIndexedDB();
+
 const sandbox = {
   console,
   setTimeout,
@@ -65,6 +119,10 @@ const sandbox = {
   Date,
   URL,
   AbortController,
+  TextEncoder,
+  TextDecoder,
+  crypto: webcrypto,
+  indexedDB: idbStub,
   fetch: async (...args) => {
     fetchCalls.push(args);
     return fetchImpl(...args);
@@ -220,6 +278,7 @@ await test("save & test stores key only after a successful TypeSafe test", async
   assert.equal(session.data.get("jevxTypesafeApiKey"), "sk-test"); // from previous test
   const bad = await sandbox.handleMessage({ type: "JEVX_SAVE_AND_TEST_KEY", apiKey: "sk-new" }, POPUP_SENDER);
   assert.equal(bad.ok, true);
+  assert.equal(bad.persisted, true);
   assert.equal(session.data.get("jevxTypesafeApiKey"), "sk-new");
 });
 
@@ -269,6 +328,43 @@ await test("different text fingerprint misses the cache", async () => {
   const r = await sandbox.handleMessage(classifyMsg("edited text"), X_SENDER);
   assert.equal(r.ok, true);
   assert.equal(fetchCalls.length, 1);
+});
+
+/* ---------- encrypted key persistence ---------- */
+
+await test("save & test persists the key encrypted at rest (plaintext never in storage.local)", async () => {
+  fetchImpl = async () => httpResp({ body: VALID_BODY });
+  const r = await sandbox.handleMessage({ type: "JEVX_SAVE_AND_TEST_KEY", apiKey: "sk-persist" }, POPUP_SENDER);
+  assert.equal(r.ok, true);
+  assert.equal(r.persisted, true);
+  assert.equal(session.data.get("jevxTypesafeApiKey"), "sk-persist");
+  const record = local.data.get("jevxTypesafeApiKeyEncrypted");
+  assert.ok(record && record.v === 1 && typeof record.iv === "string" && typeof record.ciphertext === "string");
+  assert.equal(JSON.stringify(Object.fromEntries(local.data)).includes("sk-persist"), false); // ciphertext only
+  assert.equal(idbStub._stores.get("keys").size, 1); // non-extractable CryptoKey persisted
+});
+
+await test("simulated browser restart: session wiped, key auto-unlocks, classify works with no re-entry", async () => {
+  for (const k of [...session.data.keys()]) session.data.delete(k);
+  await local.remove("jevxClassificationCache");
+  fetchCalls = [];
+  fetchImpl = async () => httpResp({ body: VALID_BODY });
+  const r = await sandbox.handleMessage(classifyMsg("restart case"), X_SENDER);
+  assert.equal(r.ok, true);
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(session.data.get("jevxTypesafeApiKey"), "sk-persist"); // unlocked back into memory
+});
+
+await test("tampered ciphertext fails closed as NOT_CONFIGURED", async () => {
+  const record = local.data.get("jevxTypesafeApiKeyEncrypted");
+  for (const k of [...session.data.keys()]) session.data.delete(k);
+  await local.set({ jevxTypesafeApiKeyEncrypted: { ...record, ciphertext: "AAAAAAAA" + record.ciphertext.slice(8) } });
+  const r = await sandbox.handleMessage(classifyMsg("tamper case"), X_SENDER);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, "NOT_CONFIGURED");
+  // restore a consistent state for the tests that follow
+  await local.set({ jevxTypesafeApiKeyEncrypted: record });
+  await session.set({ jevxTypesafeApiKey: "sk-persist" });
 });
 
 /* ---------- retry / error mapping ---------- */
@@ -340,6 +436,8 @@ await test("JEVX_CLEAR_KEY removes key; JEVX_CLEAR_CACHE empties cache", async (
   assert.equal(local.data.has("jevxClassificationCache"), false);
   await sandbox.handleMessage({ type: "JEVX_CLEAR_KEY" }, POPUP_SENDER);
   assert.equal(session.data.has("jevxTypesafeApiKey"), false);
+  assert.equal(local.data.has("jevxTypesafeApiKeyEncrypted"), false); // ciphertext gone
+  assert.equal(idbStub._stores.get("keys").size, 0); // encryption key material gone
   const s = await sandbox.handleMessage({ type: "JEVX_GET_SETTINGS" }, POPUP_SENDER);
   assert.equal(s.settings.hasApiKey, false);
 });
