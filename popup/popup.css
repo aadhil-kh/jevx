@@ -1,0 +1,180 @@
+/* jevx: popup styles */
+
+:root {
+  color-scheme: light dark;
+  --fg: #0f1419;
+  --fg-muted: #536471;
+  --bg: #ffffff;
+  --card: #f7f9f9;
+  --border: #cfd9de;
+  --accent: #1d9bf0;
+  --danger: #f4212e;
+  --ok: #00ba7c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e7e9ea;
+    --fg-muted: #8b98a5;
+    --bg: #15202b;
+    --card: #1e2732;
+    --border: #38444d;
+    --accent: #1d9bf0;
+    --danger: #f4212e;
+    --ok: #00ba7c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 320px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+main {
+  padding: 16px;
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.tagline {
+  margin: 0 0 12px;
+  color: var(--fg-muted);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+input[type="password"] {
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  margin-bottom: 10px;
+}
+
+input[type="password"]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--fg-muted);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+button.primary:hover {
+  opacity: 0.9;
+}
+
+button.primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+button.subtle {
+  display: block;
+  margin-top: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 0;
+}
+
+.toggle input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+#status {
+  min-height: 19px;
+  margin: 2px 0 8px;
+  color: var(--fg-muted);
+}
+
+#status[data-kind="ok"] {
+  color: var(--ok);
+}
+
+#status[data-kind="err"] {
+  color: var(--danger);
+}
+
+footer {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+footer p {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+footer p:last-child {
+  margin-bottom: 0;
+}

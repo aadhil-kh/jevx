@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <title>jevx</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>jevx</h1>
+    <p class="tagline">Live Jev sentiment labels for tweets and replies on X conversation pages.</p>
+
+    <section class="card">
+      <label for="key-input">TypeSafe API key</label>
+      <input id="key-input" type="password" autocomplete="off" spellcheck="false"
+             placeholder="Paste your TypeSafe API key">
+      <div class="row">
+        <button id="save-button" class="primary" type="button">Save &amp; Test</button>
+        <button id="clear-key-button" type="button">Clear key</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <label class="toggle">
+        <input type="checkbox" id="enabled-toggle">
+        <span>Enabled on X status pages</span>
+      </label>
+    </section>
+
+    <p id="status" role="status"></p>
+
+    <button id="clear-cache-button" class="subtle" type="button">Clear cached classifications</button>
+
+    <footer>
+      <p>
+        On X tweet-detail pages, visible tweet text is sent directly from this extension to
+        TypeSafe AI for sentiment classification. No developer server is used.
+      </p>
+      <p>
+        The key is stored only for the current browser session and is cleared when Chrome
+        fully restarts, so you may need to enter it again.
+      </p>
+    </footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
