@@ -142,11 +142,35 @@ button.subtle {
   margin-bottom: 0;
 }
 
+.toggle + .toggle {
+  margin-top: 10px;
+}
+
 .toggle input {
   accent-color: var(--accent);
   width: 16px;
   height: 16px;
   margin: 0;
+}
+
+select {
+  font: inherit;
+  padding: 6px 8px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--fg-muted);
 }
 
 #status {

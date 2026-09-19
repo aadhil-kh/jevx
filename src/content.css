@@ -1,51 +1,573 @@
 /*
- * jevx: injected pill styles.
+ * jevx: injected styles (reply pills, Conversation Pulse, filters).
  *
- * Every selector is namespaced with `jevx-pill`. The pill defines all
- * of its own visual properties so inherited X styles (or a future X theme)
- * cannot change its appearance, and the translucent fills + saturated text
- * colors read correctly on both X light and dark themes without theme
- * detection.
+ * Every selector is namespaced with `jevx-`. Injected elements define all
+ * of their own visual properties so inherited X styles (or a future X theme)
+ * cannot change their appearance. Colors come from the theme tokens below.
  */
 
+/* Theme tokens. X has its own light / dim / dark themes, independent of the
+   OS; content.js sets data-jevx-theme from the page background. Series
+   colors are the validated categorical palette (light and dark steps);
+   several light steps are under 3:1 on white, so every colored mark sits
+   next to a text label. */
+
+:root {
+  --jevx-ink: #0f1419;
+  --jevx-muted: #536471;
+  --jevx-line: rgba(83, 100, 113, 0.35);
+  --jevx-fill: rgba(83, 100, 113, 0.06);
+  --jevx-accent: #1d9bf0;
+  --jevx-s1: #2a78d6;
+  --jevx-s2: #eb6834;
+  --jevx-s3: #1baf7a;
+  --jevx-s4: #eda100;
+  --jevx-s5: #e87ba4;
+  --jevx-s6: #008300;
+  --jevx-s7: #4a3aa7;
+  --jevx-other: #8b98a5;
+}
+
+:root[data-jevx-theme="dark"] {
+  --jevx-ink: #e7e9ea;
+  --jevx-muted: #8b98a5;
+  --jevx-line: rgba(139, 152, 165, 0.4);
+  --jevx-fill: rgba(139, 152, 165, 0.08);
+  --jevx-s1: #3987e5;
+  --jevx-s2: #d95926;
+  --jevx-s3: #199e70;
+  --jevx-s4: #c98500;
+  --jevx-s5: #d55181;
+  --jevx-s6: #008300;
+  --jevx-s7: #9085e9;
+  --jevx-other: #71767b;
+}
+
 .jevx-pill {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   box-sizing: border-box;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  padding: 3px 8px;
-  margin: 4px 0 0;
-  border: 1px solid transparent;
+  padding: 4px 9px;
+  margin: 6px 0 0;
+  border: 1px solid var(--jevx-line);
   border-radius: 999px;
+  background: transparent;
+  color: var(--jevx-ink);
   white-space: nowrap;
   cursor: default;
 }
 
 .jevx-pill--loading {
-  color: #71767b;
-  background: rgba(113, 118, 123, 0.12);
-  border-color: rgba(113, 118, 123, 0.35);
+  color: var(--jevx-muted);
   border-style: dashed;
 }
 
-.jevx-pill--positive {
-  color: #00ba7c;
-  background: rgba(0, 186, 124, 0.1);
-  border-color: rgba(0, 186, 124, 0.45);
+/* The reply's state pill (a button) and its expandable details. */
+
+.jevx-reply {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 8px;
 }
 
-.jevx-pill--neutral {
-  color: #8b98a5;
-  background: rgba(139, 152, 165, 0.14);
-  border-color: rgba(139, 152, 165, 0.45);
+.jevx-pill--state {
+  cursor: pointer;
 }
 
-.jevx-pill--negative {
-  color: #f4212e;
-  background: rgba(244, 33, 46, 0.12);
-  border-color: rgba(244, 33, 46, 0.45);
+.jevx-pill--state:hover {
+  background: var(--jevx-fill);
+}
+
+.jevx-pill--state:focus-visible {
+  outline: 2px solid var(--jevx-accent);
+  outline-offset: 2px;
+}
+
+/* Low certainty: dotted border. Unclear: dotted and muted. */
+.jevx-pill--low {
+  border-style: dotted;
+}
+
+.jevx-pill--unclear {
+  border-style: dotted;
+  color: var(--jevx-muted);
+}
+
+.jevx-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  flex-basis: 100%;
+  font: 500 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--jevx-muted);
+}
+
+.jevx-details__row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Identity swatches: the color carries the state, the text beside it names it. */
+
+.jevx-swatch {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.jevx-swatch--s1 { background: var(--jevx-s1); }
+.jevx-swatch--s2 { background: var(--jevx-s2); }
+.jevx-swatch--s3 { background: var(--jevx-s3); }
+.jevx-swatch--s4 { background: var(--jevx-s4); }
+.jevx-swatch--s5 { background: var(--jevx-s5); }
+.jevx-swatch--s6 { background: var(--jevx-s6); }
+.jevx-swatch--s7 { background: var(--jevx-s7); }
+.jevx-swatch--other { background: var(--jevx-other); }
+.jevx-swatch--unclear {
+  background: repeating-linear-gradient(135deg, var(--jevx-other) 0 2px, transparent 2px 4px);
+  box-shadow: inset 0 0 0 1px var(--jevx-other);
+}
+
+/* "Needs attention" flag, in the reply's header left of the Grok button (or
+   after the state pill if X's header isn't recognized). */
+.jevx-pill--needs-reply {
+  color: var(--jevx-accent);
+  background: rgba(29, 155, 240, 0.1);
+  border-color: rgba(29, 155, 240, 0.5);
+  align-self: center;
+  flex-shrink: 0;
+  margin: 0 6px 0 0;
+}
+
+.jevx-reply + .jevx-pill--needs-reply {
+  margin: 6px 0 0;
+}
+
+/* Timeline category pill (src/timeline.js): a post's subcategory, in the
+   header's action group immediately left of the Grok button. One neutral
+   style for every category — the meaning is the text, not the color — and
+   it fades in once, only when the classification has landed. */
+
+.jevx-pill--timeline {
+  align-self: center;
+  flex-shrink: 0;
+  max-width: 180px;
+  margin: 0 6px 0 0;
+  padding: 4px 10px;
+  color: var(--jevx-muted);
+  background: var(--jevx-fill);
+  animation: jevx-fade-in 120ms ease-out;
+}
+
+.jevx-pill--timeline .jevx-pill__text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes jevx-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jevx-pill--timeline {
+    animation: none;
+  }
+}
+
+/* Conversation Pulse, under the original post: a one-line head, the
+   breakdown, the filter row, and a collapsible details panel. */
+
+.jevx-pulse {
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 12px 0 4px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--jevx-line);
+  border-radius: 14px;
+  background: var(--jevx-fill);
+  color: var(--jevx-muted);
+  cursor: default;
+}
+
+.jevx-pulse [hidden] {
+  display: none !important;
+}
+
+.jevx-pulse p,
+.jevx-pulse dl,
+.jevx-pulse dd {
+  margin: 0;
+}
+
+.jevx-pulse__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.jevx-pulse__brand {
+  flex-shrink: 0;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--jevx-ink);
+}
+
+.jevx-pulse__type {
+  min-width: 0;
+  overflow: hidden;
+  padding: 4px 9px;
+  border: 1px solid var(--jevx-line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--jevx-ink);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.jevx-pulse__summary {
+  flex-shrink: 0;
+  margin-left: auto !important;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--jevx-muted);
+  white-space: nowrap;
+}
+
+/* No breakdown yet ("Reading the post…", no text): the message wraps. */
+.jevx-pulse[data-jevx-idle] .jevx-pulse__summary {
+  flex: 1 1 auto;
+  margin-left: 0 !important;
+  white-space: normal;
+}
+
+.jevx-pulse__toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  margin: -2px -6px -2px 0;
+  padding: 5px 6px 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--jevx-muted);
+  cursor: pointer;
+}
+
+.jevx-pulse__toggle:hover,
+.jevx-pulse__toggle[aria-expanded="true"] {
+  background: var(--jevx-fill);
+  color: var(--jevx-ink);
+}
+
+.jevx-pulse__toggle:focus-visible {
+  outline: 2px solid var(--jevx-accent);
+  outline-offset: 1px;
+}
+
+.jevx-chevron {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.jevx-pulse__toggle[aria-expanded="true"] .jevx-chevron {
+  transform: rotate(180deg);
+}
+
+/* Stacked bar of main intents: 2px surface gaps between segments. */
+.jevx-pulse__bar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin: 10px 0 8px;
+  overflow: hidden;
+  border-radius: 999px;
+}
+
+.jevx-pulse__segment {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+}
+
+.jevx-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--jevx-muted);
+}
+
+.jevx-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.jevx-legend__pct {
+  font-weight: 700;
+  color: var(--jevx-ink);
+}
+
+/* Filter row: intent chips wrap on the left, Needs attention stays right
+   (or drops below them in a narrow column). */
+.jevx-pulse__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px 8px;
+  margin-top: 10px;
+}
+
+.jevx-filters {
+  display: flex;
+  flex: 1 1 300px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Chips that match no reply yet are tucked behind "+N more". */
+.jevx-filters:not([data-jevx-expanded]) .jevx-filter[data-jevx-empty] {
+  display: none;
+}
+
+.jevx-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  padding: 6px 11px;
+  border: 1px solid var(--jevx-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--jevx-ink);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.jevx-filter__count {
+  font-weight: 500;
+  color: var(--jevx-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.jevx-filter:hover {
+  background: rgba(29, 155, 240, 0.1);
+}
+
+.jevx-filter:focus-visible {
+  outline: 2px solid var(--jevx-accent);
+  outline-offset: 2px;
+}
+
+.jevx-filter[aria-pressed="true"] {
+  border-color: var(--jevx-accent);
+  background: var(--jevx-accent);
+  color: #ffffff;
+}
+
+.jevx-filter[aria-pressed="true"] .jevx-filter__count {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.jevx-filter[aria-pressed="true"] .jevx-swatch {
+  box-shadow: 0 0 0 1.5px #ffffff;
+}
+
+.jevx-filter--more {
+  border-style: dashed;
+  color: var(--jevx-muted);
+}
+
+/* The Needs attention toggle is independent of the intent chips. */
+.jevx-filter--toggle {
+  flex-shrink: 0;
+  border-color: rgba(29, 155, 240, 0.5);
+  color: var(--jevx-accent);
+}
+
+.jevx-filter--toggle .jevx-filter__count {
+  min-width: 18px;
+  padding: 2px 5px;
+  margin: -3px -5px -3px 0;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: rgba(29, 155, 240, 0.12);
+  color: var(--jevx-accent);
+  text-align: center;
+}
+
+.jevx-filter--toggle[aria-pressed="true"] {
+  border-color: var(--jevx-accent);
+  background: rgba(29, 155, 240, 0.15);
+  color: var(--jevx-accent);
+}
+
+.jevx-filter--toggle[aria-pressed="true"] .jevx-filter__count {
+  background: var(--jevx-accent);
+  color: #ffffff;
+}
+
+/* Details panel: the row animates from 0fr to 1fr, the clip hides the
+   overflow meanwhile. Closed, the panel is inert (set in content.js). */
+.jevx-pulse__details {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.2, 0, 0, 1),
+    opacity 180ms ease-out;
+}
+
+.jevx-pulse[data-jevx-details="open"] .jevx-pulse__details {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.jevx-pulse__clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.jevx-pulse__panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--jevx-line);
+  transform: translateY(-4px);
+  transition: transform 240ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.jevx-pulse[data-jevx-details="open"] .jevx-pulse__panel {
+  transform: none;
+}
+
+.jevx-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px 16px;
+}
+
+.jevx-facts dt,
+.jevx-pulse__label {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--jevx-muted);
+}
+
+.jevx-facts dd {
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--jevx-ink);
+}
+
+.jevx-pulse__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 12px;
+}
+
+.jevx-pulse__stance {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--jevx-ink);
+}
+
+.jevx-pulse__note {
+  margin-top: 10px !important;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--jevx-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jevx-pulse__details,
+  .jevx-pulse__panel,
+  .jevx-chevron {
+    transition: none;
+  }
+}
+
+/* Replies that don't match the active filter: their timeline cell is taken
+   out of the layout (X's list closes the gap), not detached from X's DOM.
+   While fading/collapsing (Web Animations in content.js) the cell clips its
+   content and ignores the pointer. */
+
+[data-jevx-hide="hidden"] {
+  display: none !important;
+}
+
+[data-jevx-hide="animating"] {
+  box-sizing: border-box !important;
+  overflow: clip !important;
+  pointer-events: none !important;
+}
+
+/* Per-thread "Needs attention" cutoff, in the Pulse details. */
+
+.jevx-cutoff {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--jevx-muted);
+}
+
+.jevx-cutoff__select {
+  font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  padding: 3px 6px;
+  border: 1px solid var(--jevx-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--jevx-muted);
+  cursor: pointer;
+}
+
+.jevx-cutoff__select:focus-visible {
+  outline: 2px solid var(--jevx-accent);
+  outline-offset: 2px;
 }

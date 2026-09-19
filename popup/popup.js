@@ -12,8 +12,21 @@
   const keyInput = document.getElementById("key-input");
   const saveButton = document.getElementById("save-button");
   const clearKeyButton = document.getElementById("clear-key-button");
-  const enabledToggle = document.getElementById("enabled-toggle");
+  // One switch per page mode; `surface` is the service worker's name for it.
+  const toggles = [
+    { input: document.getElementById("timeline-toggle"), surface: "timeline", setting: "timelineEnabled", name: "Timeline pills" },
+    { input: document.getElementById("conversation-toggle"), surface: "conversation", setting: "conversationEnabled", name: "Tweet pages" },
+  ];
   const clearCacheButton = document.getElementById("clear-cache-button");
+  const cutoffSelect = document.getElementById("cutoff-select");
+
+  // Multiples of 5 from 5 to 95; keep in sync with the service worker.
+  for (let value = 5; value <= 95; value += 5) {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = `${value}%`;
+    cutoffSelect.append(option);
+  }
   const statusEl = document.getElementById("status");
 
   const FRIENDLY_ERRORS = {
@@ -53,14 +66,15 @@
       setStatus("Could not read settings. Try reopening this popup.", "err");
       return;
     }
-    const { hasApiKey, enabled, lastErrorCode } = response.settings;
-    enabledToggle.checked = enabled !== false;
+    const { hasApiKey, lastErrorCode, needsReplyCutoff } = response.settings;
+    for (const toggle of toggles) toggle.input.checked = response.settings[toggle.setting] !== false;
+    cutoffSelect.value = String(needsReplyCutoff);
     if (hasApiKey) {
-      keyInput.placeholder = "API key saved on this device (encrypted)";
+      keyInput.placeholder = "API key saved in this Chrome profile";
       if (lastErrorCode === "AUTH") {
         setStatus("The saved key was rejected. Enter a new one.", "err");
       } else {
-        setStatus("API key saved, encrypted at rest on this device.", "ok");
+        setStatus("API key saved in this Chrome profile.", "ok");
       }
     } else if (lastErrorCode === "AUTH") {
       setStatus("The last key used was rejected by TypeSafe.", "err");
@@ -83,11 +97,11 @@
     saveButton.textContent = "Save & Test";
     keyInput.value = "";
     if (response && response.ok) {
-      keyInput.placeholder = "API key saved on this device (encrypted)";
+      keyInput.placeholder = "API key saved in this Chrome profile";
       if (response.persisted === false) {
-        setStatus("Key saved for this session only — encrypted storage is unavailable.", "err");
+        setStatus("Key saved for this session only; it could not be stored for after a restart.", "err");
       } else {
-        setStatus("Connected to TypeSafe. Key saved encrypted at rest.", "ok");
+        setStatus("Connected to TypeSafe. Key saved in this Chrome profile.", "ok");
       }
     } else {
       const code = response && response.error ? response.error.code : "NETWORK";
@@ -102,14 +116,24 @@
     setStatus("Key cleared.");
   });
 
-  enabledToggle.addEventListener("change", async () => {
-    const response = await send({ type: "JEVX_SET_ENABLED", enabled: enabledToggle.checked });
-    if (!response || !response.ok) {
-      setStatus("Could not update the setting.", "err");
-      enabledToggle.checked = !enabledToggle.checked;
-    } else {
-      setStatus(enabledToggle.checked ? "Enabled." : "Disabled: no classifications will run.");
-    }
+  for (const { input, surface, name } of toggles) {
+    input.addEventListener("change", async () => {
+      const response = await send({ type: "JEVX_SET_ENABLED", surface, enabled: input.checked });
+      if (!response || !response.ok) {
+        setStatus("Could not update the setting.", "err");
+        input.checked = !input.checked;
+      } else {
+        setStatus(input.checked ? `${name}: on.` : `${name}: off. Nothing is sent from there.`);
+      }
+    });
+  }
+
+  cutoffSelect.addEventListener("change", async () => {
+    const response = await send({ type: "JEVX_SET_NEEDS_REPLY_CUTOFF", needsReplyCutoff: Number(cutoffSelect.value) });
+    setStatus(
+      response && response.ok ? `"Needs attention" cutoff set to ${cutoffSelect.value}%.` : "Could not update the cutoff.",
+      response && response.ok ? "ok" : "err"
+    );
   });
 
   clearCacheButton.addEventListener("click", async () => {

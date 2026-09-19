@@ -9,7 +9,7 @@
 <body>
   <main>
     <h1>jevx</h1>
-    <p class="tagline">Live Jev sentiment labels for tweets and replies on X conversation pages.</p>
+    <p class="tagline">Labels every post in your X timeline with its category (Technical Opinion, Product Launch, AI Model Release…), and on tweet pages works out what kind of conversation you are reading and labels each reply in its terms (a launch gets Feature request, Pricing concern…), with a Conversation Pulse and filters.</p>
 
     <section class="card">
       <label for="key-input">TypeSafe API key</label>
@@ -23,9 +23,20 @@
 
     <section class="card">
       <label class="toggle">
-        <input type="checkbox" id="enabled-toggle">
-        <span>Enabled on X status pages</span>
+        <input type="checkbox" id="timeline-toggle">
+        <span>Category pills in timelines (Home, search, profiles…)</span>
       </label>
+      <label class="toggle">
+        <input type="checkbox" id="conversation-toggle">
+        <span>Reply labels and Pulse on tweet pages</span>
+      </label>
+      <p class="hint">A switched-off mode sends nothing and shows nothing.</p>
+    </section>
+
+    <section class="card">
+      <label for="cutoff-select">Default "Needs attention" cutoff</label>
+      <select id="cutoff-select"></select>
+      <p class="hint">Flag a reply when Jev gives it at least this probability of needing a response. Each thread's Pulse can override it for that thread.</p>
     </section>
 
     <p id="status" role="status"></p>
@@ -34,12 +45,19 @@
 
     <footer>
       <p>
-        On X tweet-detail pages, visible tweet text is sent directly from this extension to
-        TypeSafe AI for sentiment classification. No developer server is used.
+        On X tweet-detail pages, the original post's text is sent once to TypeSafe AI to work out
+        what kind of post it is. Then the text of each reply on or near the screen is sent,
+        together with the original post's text and that post type, to classify the reply.
+        Everywhere else on X (timeline, search, profiles…), the text of each post on or near the
+        screen is sent once to label it with its category; images and videos are never sent.
+        A mode that is switched off above sends nothing. Everything goes directly from this
+        extension to TypeSafe AI; no developer server is used. Results (never tweet text) are
+        cached on this device for up to 7 days.
       </p>
       <p>
-        The key is stored encrypted at rest on this device (AES-GCM) and stays available across
-        Chrome restarts. The plaintext key only ever lives in browser memory, never on disk.
+        The key is saved encrypted in this Chrome profile and stays available across restarts.
+        Its decryption key is stored in the same profile, so anyone who can read your profile
+        files could recover it.
       </p>
     </footer>
   </main>

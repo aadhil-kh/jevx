@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "jevx",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "minimum_chrome_version": "102",
-  "description": "Live Jev sentiment labels (positive / neutral / negative) for tweets and replies on X conversation pages.",
+  "description": "Labels X timeline posts by category and thread replies with Jev states, plus a Conversation Pulse and filters.",
   "permissions": [
     "storage"
   ],
@@ -22,7 +22,9 @@
         "https://x.com/*"
       ],
       "js": [
-        "src/content.js"
+        "src/taxonomy.js",
+        "src/content.js",
+        "src/timeline.js"
       ],
       "css": [
         "src/content.css"
