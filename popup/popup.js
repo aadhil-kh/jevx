@@ -18,6 +18,7 @@
     { input: document.getElementById("conversation-toggle"), surface: "conversation", setting: "conversationEnabled", name: "Tweet pages" },
   ];
   const clearCacheButton = document.getElementById("clear-cache-button");
+  const slopToggle = document.getElementById("slop-toggle");
   const cutoffSelect = document.getElementById("cutoff-select");
 
   // Multiples of 5 from 5 to 95; keep in sync with the service worker.
@@ -66,8 +67,9 @@
       setStatus("Could not read settings. Try reopening this popup.", "err");
       return;
     }
-    const { hasApiKey, lastErrorCode, needsReplyCutoff } = response.settings;
+    const { hasApiKey, lastErrorCode, needsReplyCutoff, slopEnabled } = response.settings;
     for (const toggle of toggles) toggle.input.checked = response.settings[toggle.setting] !== false;
+    slopToggle.checked = slopEnabled !== false;
     cutoffSelect.value = String(needsReplyCutoff);
     if (hasApiKey) {
       keyInput.placeholder = "API key saved in this Chrome profile";
@@ -127,6 +129,18 @@
       }
     });
   }
+
+  // Display only: the question rides along in requests that are sent anyway,
+  // so this changes what is shown, never what is sent or cached.
+  slopToggle.addEventListener("change", async () => {
+    const response = await send({ type: "JEVX_SET_SLOP_ENABLED", slopEnabled: slopToggle.checked });
+    if (!response || !response.ok) {
+      setStatus("Could not update the setting.", "err");
+      slopToggle.checked = !slopToggle.checked;
+    } else {
+      setStatus(slopToggle.checked ? "AI slop score: on." : "AI slop score: hidden.");
+    }
+  });
 
   cutoffSelect.addEventListener("change", async () => {
     const response = await send({ type: "JEVX_SET_NEEDS_REPLY_CUTOFF", needsReplyCutoff: Number(cutoffSelect.value) });

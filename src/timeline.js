@@ -1,13 +1,14 @@
 /**
  * jevx: X timeline content script.
  *
- * Owns: category pills on posts outside tweet-detail pages — Home,
- * Following, search results, profiles, lists, bookmarks. Each textual post
- * on or near the screen is classified once, with the exact
+ * Owns: category and AI-slop pills on posts outside tweet-detail pages —
+ * Home, Following, search results, profiles, lists, bookmarks. Each textual
+ * post on or near the screen is classified once, with the exact
  * JEVX_CLASSIFY_THREAD request conversation mode uses for an original post,
  * and its subcategory becomes one small pill in the post's header,
- * immediately left of the Grok button. No loading state, no filters, no
- * reply analysis; a post Jev is unsure about gets no pill at all.
+ * immediately left of the Grok button, with the 0-10 AI-slop score right of
+ * it. No loading state, no filters, no reply analysis; a post Jev is unsure
+ * about gets no pill at all.
  *
  * Because the request and its cache key are identical to conversation
  * mode's, a post classified here is served from the same caches when its
@@ -43,7 +44,7 @@
   // they form the shared cache identity with conversation mode. Changing
   // either side must change both.
   const MODEL = "jev-latest";
-  const CLASSIFIER_SCHEMA_VERSION = 4;
+  const CLASSIFIER_SCHEMA_VERSION = 5;
   const MAX_TEXT_CHARS = 10000;
 
   // Diagnostics, off by default: run localStorage.setItem("jevxDebug", "1")
@@ -83,6 +84,34 @@
   // service worker's persistent cache, with no API call.
   const MEMORY_CACHE_MAX = 500;
 
+  // AI-slop score. Jev answers an ordered rubric (0 = slop, SLOP_TOP_LEVEL =
+  // clearly human and substantive) inside the thread request that is sent
+  // anyway; everything below is display-only, like the certainty tiers, and
+  // never changes a request or a cache key. Keep the level ids in step with
+  // SLOP_LEVELS in src/service-worker.js (changing the rubric there is a
+  // schema bump; changing only the bands here is not), and keep this block
+  // identical to the one in src/content.js.
+  const SLOP_LEVELS = ["slop", "formulaic", "generic", "mixed", "human", "distinctive"];
+  const SLOP_TOP_LEVEL = SLOP_LEVELS.length - 1;
+  const SLOP_LEVEL_NAMES = {
+    slop: "AI slop or bot output",
+    formulaic: "Machine-flavoured",
+    generic: "Generic, low effort",
+    mixed: "Mixed",
+    human: "Human and specific",
+    distinctive: "Clearly human and substantive",
+  };
+  // Bands on the rounded 0-10 score: 0-4 reads as slop, 5-6 in between,
+  // 7-10 reads as genuine human writing.
+  const SLOP_BANDS = [
+    [7, "high"],
+    [5, "mid"],
+    [0, "low"],
+  ];
+  // A flat rubric distribution means Jev has no opinion: show no score at
+  // all rather than a number that means nothing.
+  const SLOP_MIN_CONFIDENCE = 0.45;
+
   const TAXONOMY = globalThis.JEVX_TAXONOMY;
 
   // Observed X frontend details, not an official X DOM contract (the same
@@ -114,7 +143,10 @@
     // button's action group is the structural fallback.
     grokButton: 'button[aria-label*="grok" i], [role="button"][aria-label*="grok" i]',
     caret: '[data-testid="caret"]',
+    // The category pill, the AI-slop pill right of it, and both at once.
     pill: '[data-jevx-timeline="true"]',
+    slopPill: '[data-jevx-timeline="slop"]',
+    anyPill: "[data-jevx-timeline]",
   };
 
   const PILL_BASE_CLASS = "jevx-pill";
@@ -139,6 +171,7 @@
   let modeEnabled = null;
   let settingsLoading = false;
   let settingsRetryAt = 0;
+  let slopEnabled = true; // the popup's "AI slop score" switch (display only)
   let cacheEpoch = 0; // bumped when the user clears cached classifications
 
   let mutationObserver = null;
@@ -184,6 +217,37 @@
   }
 
   const percent = (probability) => Math.round(probability * 100);
+
+  // The 0-10 score the pill shows, its color band and the rubric level Jev
+  // landed on. Identical to the helper in src/content.js.
+  function slopDisplay(slop) {
+    const value = Math.round((slop.score / SLOP_TOP_LEVEL) * 10);
+    const band = SLOP_BANDS.find(([min]) => value >= min)[1];
+    return { value, band, name: SLOP_LEVEL_NAMES[slop.label] || slop.label };
+  }
+
+  function slopTitle(slop, display, subject) {
+    return [
+      `AI slop score ${display.value} of 10 - ${display.name}`,
+      `10 = ${subject} reads as clearly human and substantive; 0 = AI slop or bot output.`,
+      `Jev's rubric level ${slop.score.toFixed(1)} of ${SLOP_TOP_LEVEL}, certainty ${slop.confidence.toFixed(2)} (the model's own statistic, not measured accuracy).`,
+    ].join("\n");
+  }
+
+  // A small speedometer, drawn inline so it takes the pill's color in both
+  // themes: a half-circle dial with the needle at the good end.
+  function slopIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "jevx-slop-icon");
+    svg.setAttribute("viewBox", "0 0 12 12");
+    svg.setAttribute("aria-hidden", "true");
+    const arc = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    arc.setAttribute("d", "M1.5 9A4.5 4.5 0 0 1 10.5 9");
+    const needle = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    needle.setAttribute("d", "M6 9 8.9 6.1");
+    svg.append(arc, needle);
+    return svg;
+  }
 
   // One message to the service worker; `done` gets its response, or null if
   // the extension context is gone or the message failed.
@@ -248,7 +312,7 @@
     observedArticles.clear();
     articleStates = new WeakMap();
     // X may reuse nodes across routes: strip everything this script added.
-    for (const pill of document.querySelectorAll(SELECTORS.pill)) pill.remove();
+    for (const pill of document.querySelectorAll(SELECTORS.anyPill)) pill.remove();
     if (DEBUG) for (const el of document.querySelectorAll("[data-jevx-skip]")) el.removeAttribute("data-jevx-skip");
     log("timeline deactivated");
   }
@@ -392,7 +456,7 @@
       observedArticles.delete(article);
       if (intersectionObserver) intersectionObserver.unobserve(article);
     }
-    removePill(article);
+    removePills(article);
   }
 
   // Debug only: why this post has no pill (null once it has one).
@@ -439,10 +503,10 @@
   function reconcile(article, state) {
     const result = memoryCache.get(state.cacheKey);
     if (result) {
-      renderPill(article, state, result);
+      renderPills(article, state, result);
       return;
     }
-    removePill(article);
+    removePills(article);
     if (DEBUG) {
       const failure = failures.get(state.cacheKey);
       markSkip(article, halted ? "halted" : failure ? `failed:${failure.code}` : "pending");
@@ -546,16 +610,29 @@
     );
   }
 
-  // The timeline renders only the subcategory (and its parent category in
-  // the tooltip), so that is what is validated here; conversation mode
-  // additionally checks the answers it uses.
+  function isValidScore(score, levels) {
+    return (
+      !!score &&
+      levels.includes(score.label) &&
+      typeof score.score === "number" &&
+      Number.isFinite(score.score) &&
+      score.score >= 0 &&
+      score.score <= levels.length - 1 &&
+      isUnitNumber(score.confidence)
+    );
+  }
+
+  // The timeline renders the subcategory (with its parent category in the
+  // tooltip) and the AI-slop score, so that is what is validated here;
+  // conversation mode additionally checks the answers it uses.
   function isValidTimelineResult(result) {
     return (
       !!result &&
       typeof result.fallback === "boolean" &&
       !!TAXONOMY.subcategory(result.matrixId) &&
       !!TAXONOMY.category(result.categoryId) &&
-      isValidChoice(result.subcategory, TAXONOMY.subcategories.map((s) => s.id))
+      isValidChoice(result.subcategory, TAXONOMY.subcategories.map((s) => s.id)) &&
+      isValidScore(result.slop, SLOP_LEVELS)
     );
   }
 
@@ -588,15 +665,27 @@
     return caret;
   }
 
+  // Up to two pills per post, the AI-slop score always rightmost: category
+  // first, then the score immediately left of the Grok button. Each is
+  // inserted relative to the other when it is already there, so whichever
+  // is rebuilt first keeps the order.
+  function renderPills(article, state, result) {
+    const placed = renderCategoryPill(article, state, result);
+    const slopPlaced = renderSlopPill(article, state, result);
+    if (!placed && !slopPlaced) return;
+    markSkip(article, null);
+  }
+
   // One neutral pill per post: the subcategory's name. The parent category,
   // the probability (not measured accuracy) and the cache state sit in the
   // title. Below TIMELINE_MIN_CERTAINTY nothing is rendered at all.
-  function renderPill(article, state, result) {
+  // Returns whether the post now has a category pill.
+  function renderCategoryPill(article, state, result) {
     const choice = result.subcategory;
     if (Math.min(choice.probability, choice.confidence) < TIMELINE_MIN_CERTAINTY) {
-      removePill(article); // uncertain: no pill rather than a guessed label
+      removeCategoryPill(article); // uncertain: no pill rather than a guessed label
       markSkip(article, `uncertain:${choice.label}`);
-      return;
+      return false;
     }
     const subcategory = TAXONOMY.subcategory(choice.label);
     const category = TAXONOMY.category(subcategory.category);
@@ -606,13 +695,15 @@
       pill.remove();
       pill = null;
     }
-    if (pill) return;
-    const anchor = pillAnchor(article);
+    if (pill) return true;
+    // Left of the slop pill when that one is already placed, otherwise at
+    // the header anchor.
+    const slop = article.querySelector(SELECTORS.slopPill);
+    const anchor = slop || pillAnchor(article);
     if (!anchor) {
       markSkip(article, "no-anchor");
-      return;
+      return false;
     }
-    markSkip(article, null);
     pill = document.createElement("span");
     pill.dataset.jevxTimeline = "true";
     pill.dataset.jevxSig = signature;
@@ -624,11 +715,59 @@
     pill.append(label);
     pill.title = `${category.name} › ${subcategory.name}\n${percent(choice.probability)}% probability (not measured accuracy)`;
     anchor.insertAdjacentElement("beforebegin", pill);
+    return true;
   }
 
-  function removePill(article) {
+  // The AI-slop score, right of the category pill and left of X's own
+  // controls. Switched off in the popup, or answered with no opinion, it is
+  // simply absent. Returns whether the post now has a score pill.
+  function renderSlopPill(article, state, result) {
+    if (!slopEnabled || result.slop.confidence < SLOP_MIN_CONFIDENCE) {
+      removeSlopPill(article);
+      return false;
+    }
+    const display = slopDisplay(result.slop);
+    const signature = `${state.cacheKey}:${display.value}:${display.band}`;
+    let pill = article.querySelector(SELECTORS.slopPill);
+    if (pill && (!pill.isConnected || pill.dataset.jevxSig !== signature)) {
+      pill.remove();
+      pill = null;
+    }
+    if (pill) return true;
+    // Right of the category pill when it is already placed, otherwise at the
+    // header anchor (an uncertain category shows none).
+    const category = article.querySelector(SELECTORS.pill);
+    const anchor = category || pillAnchor(article);
+    if (!anchor) {
+      markSkip(article, "no-anchor");
+      return false;
+    }
+    pill = document.createElement("span");
+    pill.dataset.jevxTimeline = "slop";
+    pill.dataset.jevxSig = signature;
+    pill.dataset.jevxBand = display.band;
+    pill.setAttribute("dir", "ltr");
+    pill.className = `${PILL_BASE_CLASS} ${PILL_BASE_CLASS}--timeline ${PILL_BASE_CLASS}--slop`;
+    pill.append(slopIcon(), document.createTextNode(String(display.value)));
+    pill.title = slopTitle(result.slop, display, "the post");
+    if (category) category.insertAdjacentElement("afterend", pill);
+    else anchor.insertAdjacentElement("beforebegin", pill);
+    return true;
+  }
+
+  function removeCategoryPill(article) {
     const pill = article && article.querySelector(SELECTORS.pill);
     if (pill) pill.remove();
+  }
+
+  function removeSlopPill(article) {
+    const pill = article && article.querySelector(SELECTORS.slopPill);
+    if (pill) pill.remove();
+  }
+
+  function removePills(article) {
+    if (!article) return;
+    for (const pill of article.querySelectorAll(SELECTORS.anyPill)) pill.remove();
   }
 
   /* ---------------------------------------------------------------- *
@@ -694,7 +833,7 @@
     articleStates = new WeakMap();
     if (intersectionObserver) intersectionObserver.disconnect();
     observedArticles.clear();
-    for (const pill of document.querySelectorAll(SELECTORS.pill)) pill.remove();
+    for (const pill of document.querySelectorAll(SELECTORS.anyPill)) pill.remove();
   }
 
   function onServiceWorkerMessage(message, sender) {
@@ -711,6 +850,12 @@
 
   function applyPageSettings(settings) {
     if (typeof settings.timelineEnabled === "boolean") modeEnabled = settings.timelineEnabled;
+    if (typeof settings.slopEnabled === "boolean" && settings.slopEnabled !== slopEnabled) {
+      slopEnabled = settings.slopEnabled;
+      // Display-only: nothing is re-requested, the next scan just adds or
+      // drops the score pill on posts that are already classified.
+      for (const pill of document.querySelectorAll(SELECTORS.slopPill)) pill.remove();
+    }
   }
 
   // The on/off switch lives in extension storage, which X pages can't read.

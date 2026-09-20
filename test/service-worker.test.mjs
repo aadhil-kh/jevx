@@ -278,16 +278,39 @@ await test("cache identity (constants, fingerprints, key functions) identical ac
   assert.match(sandbox.fingerprintText("hello"), /^[0-9a-f]{8}$/);
 });
 
+await test("AI-slop rubric and its 0-10 display agree across the three scripts", async () => {
+  const normalize = (src) => src.split("\n").map((l) => l.trim()).join("\n");
+  const read = (path) => fs.readFileSync(path, "utf8");
+  // The worker defines the rubric it sends; both content scripts rescale the
+  // answer to the same 0-10 number with the same bands, so a post and a reply
+  // can never be scored on different scales.
+  const levels = /const SLOP_LEVELS = \[[^\]]*\];/;
+  const worker = normalize(read(SW_PATH).match(levels)[0]);
+  for (const path of [CONTENT_PATH, TIMELINE_PATH]) {
+    assert.equal(normalize(read(path).match(levels)[0]), worker, `SLOP_LEVELS in ${path}`);
+  }
+  const shared = [/const SLOP_BANDS = \[[\s\S]*?\];/, /function slopDisplay\(slop\) \{[\s\S]*?\n\s*\}/];
+  for (const re of shared) {
+    assert.equal(normalize(read(CONTENT_PATH).match(re)[0]), normalize(read(TIMELINE_PATH).match(re)[0]), String(re));
+  }
+  // 6 rubric levels (the API allows 2-10), so the raw score's top is 5 and
+  // the pill shows score * 2. Both scripts derive their 0-10 the same way.
+  const ids = worker.match(/"[a-z_]+"/g).map((q) => q.slice(1, -1));
+  assert.equal(ids.length, 6);
+  assert.equal(sandbox.buildThreadRequestBody("t").questions.ai_slop.criteria.length, ids.length);
+  assert.ok(read(CONTENT_PATH).includes("const SLOP_TOP_LEVEL = SLOP_LEVELS.length - 1;"));
+});
+
 await test("cacheKeyFor is versioned and covers both tweets and the reply matrix", async () => {
   const fp = sandbox.fingerprintText;
   assert.equal(
     sandbox.cacheKeyFor("9", "orig", "product_launch", "123", "hi"),
-    `4:jev-latest:9:${fp("orig")}:product_launch:123:${fp("hi")}`
+    `5:jev-latest:9:${fp("orig")}:product_launch:123:${fp("hi")}`
   );
   const key = sandbox.cacheKeyFor("9", "orig", "product_launch", "123", "hi");
   assert.notEqual(key, sandbox.cacheKeyFor("9", "orig edited", "product_launch", "123", "hi"));
   assert.notEqual(key, sandbox.cacheKeyFor("9", "orig", "bug_report", "123", "hi"));
-  assert.equal(sandbox.threadCacheKeyFor("9", "orig"), `thread:4:jev-latest:9:${fp("orig")}`);
+  assert.equal(sandbox.threadCacheKeyFor("9", "orig"), `thread:5:jev-latest:9:${fp("orig")}`);
 });
 
 await test("taxonomy: ~10 categories, every matrix has 6-8 unique states ending in Other", async () => {
@@ -306,9 +329,12 @@ await test("taxonomy: ~10 categories, every matrix has 6-8 unique states ending 
   assert.equal(T.subcategory("product_launch").states[4].name, "Pricing Concern");
 });
 
-await test("thread request asks category, subcategory, conversation type and tone of the original only", async () => {
+await test("thread request asks category, subcategory, conversation type, tone and AI slop of the original only", async () => {
   const body = sandbox.buildThreadRequestBody("original text");
-  assert.deepEqual(Object.keys(body.questions).sort(), ["category", "conversation_type", "subcategory", "tone"]);
+  assert.deepEqual(Object.keys(body.questions).sort(), ["ai_slop", "category", "conversation_type", "subcategory", "tone"]);
+  // The slop score rides along in this call; it must never become one of its own.
+  assert.equal(body.questions.ai_slop.type, "score");
+  assert.equal(body.questions.ai_slop.criteria.length, 6);
   assert.deepEqual(Object.keys(body.state).sort(), ["original_post", "source"]);
   assert.equal(body.state.original_post.text, "original text");
   const subcategories = Object.keys(body.questions.subcategory.criteria);
@@ -323,8 +349,10 @@ await test("reply request uses the matrix's states plus one yes/no per state and
   const nouls = matrix.filter((id) => id !== "other").map((id) => `has_${id}`);
   assert.deepEqual(
     Object.keys(body.questions).sort(),
-    ["constructive", "needs_attention", "primary_state", "relevance", "stance", "tone", ...nouls].sort()
+    ["ai_slop", "constructive", "needs_attention", "primary_state", "relevance", "stance", "tone", ...nouls].sort()
   );
+  assert.equal(body.questions.ai_slop.type, "score");
+  assert.equal(body.questions.ai_slop.criteria.length, 6);
   for (const id of nouls) assert.equal(body.questions[id].type, "noul");
   assert.equal(body.questions.relevance.type, "score");
   assert.deepEqual(Object.keys(body.questions.stance.criteria), ["supportive", "opposing", "neutral", "mixed", "unclear"]);
@@ -340,6 +368,9 @@ await test("validateThreadResponse resolves the matrix, falling back when the su
   assert.equal(sure.matrixId, "product_launch");
   assert.equal(sure.categoryId, "product_and_startup");
   assert.equal(sure.fallback, false);
+  // The fake puts 0.9 on the top rubric level: "distinctive", 4.7 of 5.
+  assert.equal(sure.slop.label, "distinctive");
+  assert.equal(Math.round(sure.slop.score * 10) / 10, 4.7);
   const unsure = sandbox.validateThreadResponse(answerFor(body, { top: 0.3, confidence: 0.3 }));
   assert.equal(unsure.matrixId, "general_discussion");
   assert.equal(unsure.categoryId, "other"); // the category is just as unsure
@@ -359,6 +390,7 @@ await test("validateReplyResponse accepts a valid payload for its matrix", async
   assert.equal(v.stance.label, "mixed");
   assert.equal(v.relevance.label, "relevant");
   assert.equal(v.needsAttention.probability, 0.82);
+  assert.equal(v.slop.label, "distinctive");
   assert.equal(v.model, "jev-latest");
 });
 
@@ -765,7 +797,15 @@ await test("state changes are pushed to open tabs (unreachable tabs ignored)", a
   );
   assert.deepEqual(
     { ...tabMessages[0].message },
-    { type: "JEVX_STATE_CHANGED", hasApiKey: true, timelineEnabled: true, conversationEnabled: true, cacheCleared: false, needsReplyCutoff: 80 }
+    {
+      type: "JEVX_STATE_CHANGED",
+      hasApiKey: true,
+      timelineEnabled: true,
+      conversationEnabled: true,
+      cacheCleared: false,
+      needsReplyCutoff: 80,
+      slopEnabled: true,
+    }
   );
 
   tabMessages = [];
@@ -798,7 +838,7 @@ await test("needs-reply cutoff: multiples of 5 from 5 to 95, popup-only, pushed 
   assert.equal(tabMessages[0].message.needsReplyCutoff, 65);
   const page = await sandbox.handleMessage({ type: "JEVX_GET_PAGE_SETTINGS" }, X_SENDER);
   // display settings and the two switches only, nothing about the key
-  assert.deepEqual({ ...page }, { ok: true, needsReplyCutoff: 65, timelineEnabled: true, conversationEnabled: true });
+  assert.deepEqual({ ...page }, { ok: true, needsReplyCutoff: 65, timelineEnabled: true, conversationEnabled: true, slopEnabled: true });
   const fromPopup = await sandbox.handleMessage({ type: "JEVX_GET_PAGE_SETTINGS" }, POPUP_SENDER);
   assert.equal(fromPopup.error.code, "INVALID_REQUEST");
   await local.set({ jevxSettings: { ...local.data.get("jevxSettings"), needsReplyCutoff: 42 } }); // corrupted value
@@ -806,12 +846,37 @@ await test("needs-reply cutoff: multiples of 5 from 5 to 95, popup-only, pushed 
   await sandbox.handleMessage({ type: "JEVX_SET_NEEDS_REPLY_CUTOFF", needsReplyCutoff: 80 }, POPUP_SENDER);
 });
 
+/* ---------- AI slop score switch ---------- */
+
+await test("AI slop switch: popup-only, display-only, pushed to tabs, never changes a request", async () => {
+  for (const bad of [undefined, "false", 0, null]) {
+    const r = await sandbox.handleMessage({ type: "JEVX_SET_SLOP_ENABLED", slopEnabled: bad }, POPUP_SENDER);
+    assert.equal(r.error.code, "INVALID_REQUEST", String(bad));
+  }
+  const fromPage = await sandbox.handleMessage({ type: "JEVX_SET_SLOP_ENABLED", slopEnabled: false }, X_SENDER);
+  assert.equal(fromPage.error.code, "INVALID_REQUEST"); // X pages can't change settings
+  assert.equal((await sandbox.getSettings()).slopEnabled, true); // on by default
+
+  tabMessages = [];
+  const off = await sandbox.handleMessage({ type: "JEVX_SET_SLOP_ENABLED", slopEnabled: false }, POPUP_SENDER);
+  assert.equal(off.ok, true);
+  assert.equal(tabMessages[0].message.slopEnabled, false);
+  assert.equal((await sandbox.handleMessage({ type: "JEVX_GET_PAGE_SETTINGS" }, X_SENDER)).slopEnabled, false);
+  // Hiding the pill must not change what is asked or how it is cached.
+  assert.ok("ai_slop" in sandbox.buildThreadRequestBody("t").questions);
+  assert.ok("ai_slop" in sandbox.buildReplyRequestBody("o", "product_launch", "r").questions);
+  await sandbox.handleMessage({ type: "JEVX_SET_SLOP_ENABLED", slopEnabled: true }, POPUP_SENDER);
+});
+
 /* ---------- popup flows ---------- */
 
 await test("JEVX_GET_SETTINGS returns non-secret state only", async () => {
   const r = await sandbox.handleMessage({ type: "JEVX_GET_SETTINGS" }, POPUP_SENDER);
   assert.equal(r.ok, true);
-  assert.deepEqual(Object.keys(r.settings).sort(), ["conversationEnabled", "hasApiKey", "lastErrorCode", "needsReplyCutoff", "timelineEnabled"]);
+  assert.deepEqual(
+    Object.keys(r.settings).sort(),
+    ["conversationEnabled", "hasApiKey", "lastErrorCode", "needsReplyCutoff", "slopEnabled", "timelineEnabled"]
+  );
   assert.equal(r.settings.needsReplyCutoff, 80); // default
   assert.equal(r.settings.hasApiKey, true);
   assert.equal(JSON.stringify(r.settings).includes("sk-"), false); // no key material leaked

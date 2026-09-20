@@ -9,7 +9,7 @@
 <body>
   <main>
     <h1>jevx</h1>
-    <p class="tagline">Labels every post in your X timeline with its category (Technical Opinion, Product Launch, AI Model Release…), and on tweet pages works out what kind of conversation you are reading and labels each reply in its terms (a launch gets Feature request, Pricing concern…), with a Conversation Pulse and filters.</p>
+    <p class="tagline">Labels every post in your X timeline with its category (Technical Opinion, Product Launch, AI Model Release…) and an AI slop score, and on tweet pages works out what kind of conversation you are reading and labels each reply in its terms (a launch gets Feature request, Pricing concern…), with a Conversation Pulse and filters.</p>
 
     <section class="card">
       <label for="key-input">TypeSafe API key</label>
@@ -34,6 +34,19 @@
     </section>
 
     <section class="card">
+      <label class="toggle">
+        <input type="checkbox" id="slop-toggle">
+        <span>AI slop score on posts and replies</span>
+      </label>
+      <p class="hint">
+        A 0&ndash;10 score for how much the writing reads as genuine and substantive rather than
+        AI slop or bot output: 0&ndash;4 red, 5&ndash;6 amber, 7&ndash;10 green. It is the rightmost
+        pill, after the category. Jev answers it inside the request that is already being sent, so
+        switching it off shows less but sends and costs the same.
+      </p>
+    </section>
+
+    <section class="card">
       <label for="cutoff-select">Default "Needs attention" cutoff</label>
       <select id="cutoff-select"></select>
       <p class="hint">Flag a reply when Jev gives it at least this probability of needing a response. Each thread's Pulse can override it for that thread.</p>
@@ -50,6 +63,8 @@
         together with the original post's text and that post type, to classify the reply.
         Everywhere else on X (timeline, search, profiles…), the text of each post on or near the
         screen is sent once to label it with its category; images and videos are never sent.
+        The AI slop score is answered inside those same requests, so it adds nothing to what is
+        sent and no extra request.
         A mode that is switched off above sends nothing. Everything goes directly from this
         extension to TypeSafe AI; no developer server is used. Results (never tweet text) are
         cached on this device for up to 7 days.

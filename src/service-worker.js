@@ -41,7 +41,7 @@
 // cache identity.
 const TYPESAFE_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const MODEL = "jev-latest";
-const CLASSIFIER_SCHEMA_VERSION = 4; // v4: thread taxonomy + per-subcategory reply matrix + universal signals
+const CLASSIFIER_SCHEMA_VERSION = 5; // v5: v4 + the AI-slop score on both the original post and each reply
 const MAX_TEXT_CHARS = 10000;
 
 // Transport defaults mirror the current TypeSafe JavaScript SDK.
@@ -62,6 +62,11 @@ const SETTINGS_STORAGE_KEY = "jevxSettings";
 // Keep in sync with src/content.js and popup/popup.js.
 const DEFAULT_NEEDS_REPLY_CUTOFF = 80;
 const isValidCutoff = (value) => Number.isInteger(value) && value >= 5 && value <= 95 && value % 5 === 0;
+// Show the AI-slop pill? Display-only: the question is asked either way (it
+// rides along in requests that are sent anyway), so the switch never changes
+// a request or a cache key. Keep in sync with src/content.js, src/timeline.js
+// and popup/popup.js.
+const DEFAULT_SLOP_ENABLED = true;
 const API_KEY_STORAGE_KEY = "jevxTypesafeApiKey";
 const PERSISTENT_KEY_STORAGE_KEY = "jevxTypesafeApiKeyEncrypted";
 const AUTH_FAILURE_AT_KEY = "jevxAuthFailureAt";
@@ -93,10 +98,12 @@ const THREAD_MIN_CERTAINTY = 0.45;
 /* ------------------------------------------------------------------ *
  * Questions
  *
- * Stage 1 asks four questions about the original post, once per thread.
+ * Stage 1 asks five questions about the original post, once per thread.
  * Stage 2 asks, once per reply, which state of the thread's matrix is the
  * reply's main intent, one yes/no per state (a reply can be a question AND
- * a feature request), and the universal signals. Questions are evaluated
+ * a feature request), the universal signals and the AI-slop score. Every
+ * answer comes back in the one call that was going to be sent anyway, so no
+ * question here costs an extra request. Questions are evaluated
  * independently, so none refers to another's answer. Changing any of them
  * (or the taxonomy) requires bumping CLASSIFIER_SCHEMA_VERSION so old cache
  * entries miss instead of being silently reused.
@@ -205,6 +212,33 @@ const NEEDS_ATTENTION_QUESTION = {
     false: "Reactions, plain agreement or praise, jokes, spam, off-topic remarks, or anything else that does not call for a response.",
   },
 };
+
+// AI slop: one ordered rubric, asked about the original post in the thread
+// request and about each reply in the reply request. It rides along in calls
+// that are sent anyway (the docs' speculative fan-out pattern), so it costs
+// no extra request. Ascending, so the top level is the good end: level 5 is
+// clearly human, level 0 is slop. Level ids are the display labels; the
+// criteria array sent to Jev is the rubric below, in the same order.
+const SLOP_LEVELS = ["slop", "formulaic", "generic", "mixed", "human", "distinctive"];
+const SLOP_TOP_LEVEL = SLOP_LEVELS.length - 1; // the raw score's maximum; the UI rescales it to 0-10
+
+function slopQuestion(subject) {
+  return {
+    type: "score",
+    instructions: `How much does ${subject} read as genuine, substantive writing by a person rather than AI slop or bot output? Judge the writing itself - how specific it is, whether it has a voice, whether it is templated - not whether the claims are true and not whether you agree with them. Posts here are short by nature: brevity alone is not slop, and length alone is not substance. ${CONTENT_NOT_INSTRUCTIONS}`,
+    criteria: [
+      "Unmistakable AI slop or bot output: engagement bait, spam, a canned or template message that would fit under almost any post, emoji-bulleted listicles, hashtag or link stuffing.",
+      "Strongly machine-flavoured: stock openers and tidily parallel phrasing, sweeping generic claims, no concrete detail, nothing that only this author could have written.",
+      "Low-effort or generic: fluent but empty - restates the point, generic praise or agreement, advice that would apply to anyone.",
+      "Mixed: some specific or first-hand content, but noticeably templated, padded or generic in places.",
+      "Human and specific: concrete details, a consistent personal voice, little filler.",
+      "Clearly human and substantive: first-hand specifics, a distinctive voice, a point only this author would make.",
+    ],
+  };
+}
+
+const POST_SLOP_QUESTION = slopQuestion("the original post");
+const REPLY_SLOP_QUESTION = slopQuestion("the reply");
 
 // The matrix-specific questions for one subcategory: the primary state
 // (choice) and one yes/no per state except Other, for secondary intents.
@@ -320,6 +354,7 @@ async function getSettings() {
     conversationEnabled: flag(settings.conversationEnabled),
     lastErrorCode: typeof settings.lastErrorCode === "string" ? settings.lastErrorCode : null,
     needsReplyCutoff: isValidCutoff(settings.needsReplyCutoff) ? settings.needsReplyCutoff : DEFAULT_NEEDS_REPLY_CUTOFF,
+    slopEnabled: typeof settings.slopEnabled === "boolean" ? settings.slopEnabled : DEFAULT_SLOP_ENABLED,
   };
 }
 
@@ -658,6 +693,7 @@ function buildThreadRequestBody(text) {
       subcategory: SUBCATEGORY_QUESTION,
       conversation_type: CONVERSATION_TYPE_QUESTION,
       tone: THREAD_TONE_QUESTION,
+      ai_slop: POST_SLOP_QUESTION,
     },
   };
 }
@@ -681,6 +717,7 @@ function buildReplyRequestBody(contextText, matrixId, text) {
       relevance: RELEVANCE_QUESTION,
       constructive: CONSTRUCTIVE_QUESTION,
       needs_attention: NEEDS_ATTENTION_QUESTION,
+      ai_slop: REPLY_SLOP_QUESTION,
     },
   };
 }
@@ -758,8 +795,9 @@ function validateThreadResponse(payload) {
   const subcategory = validateChoiceAnswer(answers.subcategory, Object.keys(SUBCATEGORY_QUESTION.criteria));
   const conversationType = validateChoiceAnswer(answers.conversation_type, Object.keys(CONVERSATION_TYPE_QUESTION.criteria));
   const tone = validateChoiceAnswer(answers.tone, Object.keys(THREAD_TONE_QUESTION.criteria));
-  if (!category || !subcategory || !conversationType || !tone) return null;
-  return { model: payload.model, category, subcategory, conversationType, tone, ...resolveThread(category, subcategory) };
+  const slop = validateScoreAnswer(answers.ai_slop, SLOP_LEVELS);
+  if (!category || !subcategory || !conversationType || !tone || !slop) return null;
+  return { model: payload.model, category, subcategory, conversationType, tone, slop, ...resolveThread(category, subcategory) };
 }
 
 function validateReplyResponse(payload, matrixId) {
@@ -780,8 +818,9 @@ function validateReplyResponse(payload, matrixId) {
   const relevance = validateScoreAnswer(answers.relevance, RELEVANCE_LEVELS);
   const constructive = validateNoulAnswer(answers.constructive);
   const needsAttention = validateNoulAnswer(answers.needs_attention);
-  if (!stance || !tone || !relevance || !constructive || !needsAttention) return null;
-  return { model: payload.model, matrixId, primaryState, stateSignals, stance, tone, relevance, constructive, needsAttention };
+  const slop = validateScoreAnswer(answers.ai_slop, SLOP_LEVELS);
+  if (!stance || !tone || !relevance || !constructive || !needsAttention || !slop) return null;
+  return { model: payload.model, matrixId, primaryState, stateSignals, stance, tone, relevance, constructive, needsAttention, slop };
 }
 
 // Every `probability` is the model's probability for an option, NOT
@@ -877,6 +916,7 @@ async function notifyTabs({ cacheCleared = false } = {}) {
       conversationEnabled: settings.conversationEnabled,
       cacheCleared,
       needsReplyCutoff: settings.needsReplyCutoff,
+      slopEnabled: settings.slopEnabled,
     };
     const tabs = await chrome.tabs.query({});
     await Promise.all(
@@ -1092,6 +1132,16 @@ async function handleSetNeedsReplyCutoff(message, sender) {
   return { ok: true };
 }
 
+async function handleSetSlopEnabled(message, sender) {
+  if (!isFromExtensionPage(sender)) return errorResponse("INVALID_REQUEST", "Sender is not an extension page.");
+  if (typeof message.slopEnabled !== "boolean") {
+    return errorResponse("INVALID_REQUEST", "slopEnabled must be a boolean.");
+  }
+  await updateSettings({ slopEnabled: message.slopEnabled });
+  await notifyTabs();
+  return { ok: true };
+}
+
 // The only settings an X page may read: display preferences and which
 // surfaces are switched on, nothing about the key.
 async function handleGetPageSettings(sender) {
@@ -1102,6 +1152,7 @@ async function handleGetPageSettings(sender) {
     needsReplyCutoff: settings.needsReplyCutoff,
     timelineEnabled: settings.timelineEnabled,
     conversationEnabled: settings.conversationEnabled,
+    slopEnabled: settings.slopEnabled,
   };
 }
 
@@ -1129,6 +1180,8 @@ async function handleMessage(message, sender) {
       return handleSetEnabled(message, sender);
     case "JEVX_SET_NEEDS_REPLY_CUTOFF":
       return handleSetNeedsReplyCutoff(message, sender);
+    case "JEVX_SET_SLOP_ENABLED":
+      return handleSetSlopEnabled(message, sender);
     case "JEVX_GET_PAGE_SETTINGS":
       return handleGetPageSettings(sender);
     case "JEVX_CLEAR_CACHE":

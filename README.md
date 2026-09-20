@@ -2,7 +2,7 @@
 
 **Jev for X** is a Chrome extension that adds live semantic classification to X.
 
-It categorizes posts in your timeline and understands replies in the context of the original post using [TypeSafe Jev](https://typesafe.ai).
+It categorizes posts in your timeline, scores how much they read as AI slop, and understands replies in the context of the original post using [TypeSafe Jev](https://typesafe.ai).
 
 ## What it does
 
@@ -20,6 +20,27 @@ Examples:
 - Career Advice
 
 The label appears directly in the post header.
+
+### AI slop score
+
+Every classified post and reply also gets a 0-10 score for how much its writing reads as
+genuine and substantive rather than AI slop or bot output.
+
+```text
+0-4   reads as AI slop or bot output   (red)
+5-6   in between                       (amber)
+7-10  reads as genuine human writing   (green)
+```
+
+It is shown as a small gauge pill, always the rightmost one: after the category pill in the
+timeline and in the Conversation Pulse, after the state pill under a reply. Jev answers it
+inside the request that is already being sent for the category or the reply, so the score
+costs no extra API call. It can be switched off in the popup, which hides the pill; what is
+sent and what is cached do not change.
+
+A score is only shown when Jev has an opinion (rubric certainty of at least 0.45), and the
+number is the model's judgment of the writing, not a detector verdict: human writing can be
+terse and formulaic, and a careful AI-written post can read as human.
 
 ### Context-aware reply classification
 
@@ -120,6 +141,7 @@ For each original post, jevx determines:
 - subcategory
 - conversation type
 - tone
+- AI slop score
 
 The result is cached and reused when possible.
 
@@ -132,6 +154,7 @@ A reply can also include additional signals such as:
 - relevance
 - constructiveness
 - whether it may need attention
+- AI slop score
 
 ## Install
 
@@ -310,7 +333,7 @@ Handles non-detail X pages:
 - Lists
 - Bookmarks
 
-It analyzes near-viewport posts and renders their subcategory labels.
+It analyzes near-viewport posts and renders their subcategory labels and AI slop scores.
 
 ### `src/service-worker.js`
 

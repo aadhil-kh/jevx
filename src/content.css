@@ -7,10 +7,17 @@
  */
 
 /* Theme tokens. X has its own light / dim / dark themes, independent of the
-   OS; content.js sets data-jevx-theme from the page background. Series
-   colors are the validated categorical palette (light and dark steps);
-   several light steps are under 3:1 on white, so every colored mark sits
-   next to a text label. */
+   OS; content.js and timeline.js set data-jevx-theme from the page
+   background. Series colors are the validated categorical palette (light and
+   dark steps); several light steps are under 3:1 on white, so every colored
+   mark sits next to a text label.
+
+   Every color used anywhere below is a token, and every token has both a
+   light and a dark step: a literal color in a rule would keep its light-theme
+   value on X's dim and dark themes. Tinted borders and fills are their own
+   tokens rather than color-mix(), which needs a newer Chrome than the
+   manifest asks for; the dark steps are stronger, since a light theme's faint
+   tint disappears on #000. */
 
 :root {
   --jevx-ink: #0f1419;
@@ -18,6 +25,11 @@
   --jevx-line: rgba(83, 100, 113, 0.35);
   --jevx-fill: rgba(83, 100, 113, 0.06);
   --jevx-accent: #1d9bf0;
+  --jevx-on-accent: #ffffff;
+  --jevx-on-accent-soft: rgba(255, 255, 255, 0.8);
+  --jevx-accent-line: rgba(29, 155, 240, 0.5);
+  --jevx-accent-fill: rgba(29, 155, 240, 0.1);
+  --jevx-accent-fill-strong: rgba(29, 155, 240, 0.15);
   --jevx-s1: #2a78d6;
   --jevx-s2: #eb6834;
   --jevx-s3: #1baf7a;
@@ -26,6 +38,16 @@
   --jevx-s6: #008300;
   --jevx-s7: #4a3aa7;
   --jevx-other: #8b98a5;
+  /* AI-slop bands: muted, not punchy, and readable on white. */
+  --jevx-slop-low: #b4432f;
+  --jevx-slop-low-line: rgba(180, 67, 47, 0.42);
+  --jevx-slop-low-fill: rgba(180, 67, 47, 0.09);
+  --jevx-slop-mid: #8a6516;
+  --jevx-slop-mid-line: rgba(138, 101, 22, 0.42);
+  --jevx-slop-mid-fill: rgba(138, 101, 22, 0.09);
+  --jevx-slop-high: #1a7f57;
+  --jevx-slop-high-line: rgba(26, 127, 87, 0.42);
+  --jevx-slop-high-fill: rgba(26, 127, 87, 0.09);
 }
 
 :root[data-jevx-theme="dark"] {
@@ -33,14 +55,29 @@
   --jevx-muted: #8b98a5;
   --jevx-line: rgba(139, 152, 165, 0.4);
   --jevx-fill: rgba(139, 152, 165, 0.08);
+  --jevx-accent: #1d9bf0;
+  --jevx-on-accent: #ffffff;
+  --jevx-on-accent-soft: rgba(255, 255, 255, 0.8);
+  --jevx-accent-line: rgba(29, 155, 240, 0.55);
+  --jevx-accent-fill: rgba(29, 155, 240, 0.18);
+  --jevx-accent-fill-strong: rgba(29, 155, 240, 0.26);
   --jevx-s1: #3987e5;
   --jevx-s2: #d95926;
   --jevx-s3: #199e70;
   --jevx-s4: #c98500;
   --jevx-s5: #d55181;
-  --jevx-s6: #008300;
+  --jevx-s6: #3aa84f; /* the light step (#008300) is too dark on X's dark theme */
   --jevx-s7: #9085e9;
   --jevx-other: #71767b;
+  --jevx-slop-low: #e08074;
+  --jevx-slop-low-line: rgba(224, 128, 116, 0.46);
+  --jevx-slop-low-fill: rgba(224, 128, 116, 0.14);
+  --jevx-slop-mid: #d0aa5b;
+  --jevx-slop-mid-line: rgba(208, 170, 91, 0.46);
+  --jevx-slop-mid-fill: rgba(208, 170, 91, 0.14);
+  --jevx-slop-high: #5cb98e;
+  --jevx-slop-high-line: rgba(92, 185, 142, 0.46);
+  --jevx-slop-high-fill: rgba(92, 185, 142, 0.14);
 }
 
 .jevx-pill {
@@ -141,8 +178,8 @@
    after the state pill if X's header isn't recognized). */
 .jevx-pill--needs-reply {
   color: var(--jevx-accent);
-  background: rgba(29, 155, 240, 0.1);
-  border-color: rgba(29, 155, 240, 0.5);
+  background: var(--jevx-accent-fill);
+  border-color: var(--jevx-accent-line);
   align-self: center;
   flex-shrink: 0;
   margin: 0 6px 0 0;
@@ -185,6 +222,57 @@
   .jevx-pill--timeline {
     animation: none;
   }
+}
+
+/* AI-slop score: a gauge icon and a 0-10 number, where 10 is writing that
+   reads as clearly human and substantive and 0 is slop. The rightmost pill
+   on every surface — after the category pill in the timeline and in the
+   Pulse, after the state pill under a reply. Defined after the timeline
+   rules above, whose neutral color it overrides. The band color repeats what
+   the number already says, so color is never the only cue. */
+
+.jevx-pill--slop {
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: none;
+  color: var(--jevx-slop);
+  border-color: var(--jevx-slop-edge);
+  background: var(--jevx-slop-bg);
+  font-variant-numeric: tabular-nums;
+}
+
+.jevx-pill--slop[data-jevx-band="low"] {
+  --jevx-slop: var(--jevx-slop-low);
+  --jevx-slop-edge: var(--jevx-slop-low-line);
+  --jevx-slop-bg: var(--jevx-slop-low-fill);
+}
+
+.jevx-pill--slop[data-jevx-band="mid"] {
+  --jevx-slop: var(--jevx-slop-mid);
+  --jevx-slop-edge: var(--jevx-slop-mid-line);
+  --jevx-slop-bg: var(--jevx-slop-mid-fill);
+}
+
+.jevx-pill--slop[data-jevx-band="high"] {
+  --jevx-slop: var(--jevx-slop-high);
+  --jevx-slop-edge: var(--jevx-slop-high-line);
+  --jevx-slop-bg: var(--jevx-slop-high-fill);
+}
+
+.jevx-slop-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* In the Pulse head the pill sits in a centered row, not under the text. */
+.jevx-pulse__slop {
+  margin: 0;
 }
 
 /* Conversation Pulse, under the original post: a one-line head, the
@@ -384,7 +472,7 @@
 }
 
 .jevx-filter:hover {
-  background: rgba(29, 155, 240, 0.1);
+  background: var(--jevx-accent-fill);
 }
 
 .jevx-filter:focus-visible {
@@ -395,15 +483,15 @@
 .jevx-filter[aria-pressed="true"] {
   border-color: var(--jevx-accent);
   background: var(--jevx-accent);
-  color: #ffffff;
+  color: var(--jevx-on-accent);
 }
 
 .jevx-filter[aria-pressed="true"] .jevx-filter__count {
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--jevx-on-accent-soft);
 }
 
 .jevx-filter[aria-pressed="true"] .jevx-swatch {
-  box-shadow: 0 0 0 1.5px #ffffff;
+  box-shadow: 0 0 0 1.5px var(--jevx-on-accent);
 }
 
 .jevx-filter--more {
@@ -414,7 +502,7 @@
 /* The Needs attention toggle is independent of the intent chips. */
 .jevx-filter--toggle {
   flex-shrink: 0;
-  border-color: rgba(29, 155, 240, 0.5);
+  border-color: var(--jevx-accent-line);
   color: var(--jevx-accent);
 }
 
@@ -424,20 +512,20 @@
   margin: -3px -5px -3px 0;
   box-sizing: border-box;
   border-radius: 999px;
-  background: rgba(29, 155, 240, 0.12);
+  background: var(--jevx-accent-fill);
   color: var(--jevx-accent);
   text-align: center;
 }
 
 .jevx-filter--toggle[aria-pressed="true"] {
   border-color: var(--jevx-accent);
-  background: rgba(29, 155, 240, 0.15);
+  background: var(--jevx-accent-fill-strong);
   color: var(--jevx-accent);
 }
 
 .jevx-filter--toggle[aria-pressed="true"] .jevx-filter__count {
   background: var(--jevx-accent);
-  color: #ffffff;
+  color: var(--jevx-on-accent);
 }
 
 /* Details panel: the row animates from 0fr to 1fr, the clip hides the

@@ -10,11 +10,12 @@
  * reacting to state changes pushed by the service worker.
  *
  * The original post is classified once (category, subcategory, conversation
- * type, tone); its subcategory picks the reply matrix from src/taxonomy.js
- * (loaded before this script). Each reply is then classified once against
- * that matrix (primary state, per-state yes/no, stance, tone, relevance,
- * constructiveness, needs attention). The Pulse and the filters are computed
- * locally from results already on hand; they never trigger requests.
+ * type, tone, AI-slop score); its subcategory picks the reply matrix from
+ * src/taxonomy.js (loaded before this script). Each reply is then classified
+ * once against that matrix (primary state, per-state yes/no, stance, tone,
+ * relevance, constructiveness, needs attention, AI-slop score). The Pulse and
+ * the filters are computed locally from results already on hand; they never
+ * trigger requests.
  *
  * It never sees the TypeSafe API key. All classification goes through the
  * extension service worker via one-time messages, which answers with a
@@ -39,7 +40,7 @@
   // and cacheKeyFor() in sync with src/service-worker.js; together they form
   // the shared cache identity. Changing either side must change both.
   const MODEL = "jev-latest";
-  const CLASSIFIER_SCHEMA_VERSION = 4;
+  const CLASSIFIER_SCHEMA_VERSION = 5;
   const MAX_TEXT_CHARS = 10000;
 
   const DEBUG = false;
@@ -79,6 +80,34 @@
   ];
   // A second state is shown when its own yes/no probability reaches this.
   const SECONDARY_MIN = 0.6;
+
+  // AI-slop score. Jev answers an ordered rubric (0 = slop, SLOP_TOP_LEVEL =
+  // clearly human and substantive) inside the thread and reply requests that
+  // are sent anyway; everything below is display-only, like the certainty
+  // tiers, and never changes a request or a cache key. Keep the level ids in
+  // step with SLOP_LEVELS in src/service-worker.js (changing the rubric
+  // there is a schema bump; changing only the bands here is not), and keep
+  // this block identical to the one in src/timeline.js.
+  const SLOP_LEVELS = ["slop", "formulaic", "generic", "mixed", "human", "distinctive"];
+  const SLOP_TOP_LEVEL = SLOP_LEVELS.length - 1;
+  const SLOP_LEVEL_NAMES = {
+    slop: "AI slop or bot output",
+    formulaic: "Machine-flavoured",
+    generic: "Generic, low effort",
+    mixed: "Mixed",
+    human: "Human and specific",
+    distinctive: "Clearly human and substantive",
+  };
+  // Bands on the rounded 0-10 score: 0-4 reads as slop, 5-6 in between,
+  // 7-10 reads as genuine human writing.
+  const SLOP_BANDS = [
+    [7, "high"],
+    [5, "mid"],
+    [0, "low"],
+  ];
+  // A flat rubric distribution means Jev has no opinion: show no score at
+  // all rather than a number that means nothing.
+  const SLOP_MIN_CONFIDENCE = 0.45;
 
   // A matrix's states take categorical color slots 1–7 in matrix order
   // (content.css); Other is gray and Unclear gray-striped. Matrices have at
@@ -183,6 +212,7 @@
   let originalAuthor = null; // lowercased handle, once the original has been seen
   const pulseEntries = new Map(); // reply tweet id -> {primary, secondary, stance, needs}, for the current context only
   let globalCutoff = DEFAULT_NEEDS_REPLY_CUTOFF; // from the extension settings
+  let slopEnabled = true; // the popup's "AI slop score" switch (display only)
   let threadCutoff = null; // this thread's override from the Pulse, or null
   // Pulse disclosure, kept for the session so a rebuilt Pulse opens the same way.
   let pulseDetailsOpen = false;
@@ -240,6 +270,62 @@
   }
 
   const percent = (probability) => Math.round(probability * 100);
+
+  // The 0-10 score the pill shows, its color band and the rubric level Jev
+  // landed on. Identical to the helper in src/timeline.js.
+  function slopDisplay(slop) {
+    const value = Math.round((slop.score / SLOP_TOP_LEVEL) * 10);
+    const band = SLOP_BANDS.find(([min]) => value >= min)[1];
+    return { value, band, name: SLOP_LEVEL_NAMES[slop.label] || slop.label };
+  }
+
+  function slopTitle(slop, display, subject) {
+    return [
+      `AI slop score ${display.value} of 10 - ${display.name}`,
+      `10 = ${subject} reads as clearly human and substantive; 0 = AI slop or bot output.`,
+      `Jev's rubric level ${slop.score.toFixed(1)} of ${SLOP_TOP_LEVEL}, certainty ${slop.confidence.toFixed(2)} (the model's own statistic, not measured accuracy).`,
+    ].join("\n");
+  }
+
+  // Is there a score worth showing for this result?
+  const hasSlop = (result) => slopEnabled && !!result && !!result.slop && result.slop.confidence >= SLOP_MIN_CONFIDENCE;
+
+  // A small speedometer, drawn inline so it takes the pill's color in both
+  // themes: a half-circle dial with the needle at the good end.
+  function slopIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "jevx-slop-icon");
+    svg.setAttribute("viewBox", "0 0 12 12");
+    svg.setAttribute("aria-hidden", "true");
+    const arc = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    arc.setAttribute("d", "M1.5 9A4.5 4.5 0 0 1 10.5 9");
+    const needle = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    needle.setAttribute("d", "M6 9 8.9 6.1");
+    svg.append(arc, needle);
+    return svg;
+  }
+
+  // The score pill: a gauge and the number, its band in a data attribute so
+  // the color lives in content.css. `extraClass` places it in the Pulse head.
+  function slopPillElement(extraClass) {
+    const pill = document.createElement("span");
+    pill.className = `${PILL_BASE_CLASS} ${PILL_BASE_CLASS}--slop${extraClass ? ` ${extraClass}` : ""}`;
+    pill.setAttribute("dir", "ltr");
+    const text = document.createElement("span");
+    text.className = `${PILL_BASE_CLASS}__text`;
+    pill.append(slopIcon(), text);
+    return pill;
+  }
+
+  // Idempotent: a no-op write would fire the MutationObserver.
+  function updateSlopPill(pill, slop, subject) {
+    const display = slopDisplay(slop);
+    if (pill.dataset.jevxBand !== display.band) pill.dataset.jevxBand = display.band;
+    setText(pill.querySelector(`.${PILL_BASE_CLASS}__text`), String(display.value));
+    const title = slopTitle(slop, display, subject);
+    if (pill.title !== title) pill.title = title;
+    return pill;
+  }
 
   // a precedes b in document order.
   const isBefore = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
@@ -942,6 +1028,18 @@
     );
   }
 
+  function isValidScore(score, levels) {
+    return (
+      !!score &&
+      levels.includes(score.label) &&
+      typeof score.score === "number" &&
+      Number.isFinite(score.score) &&
+      score.score >= 0 &&
+      score.score <= levels.length - 1 &&
+      isUnitNumber(score.confidence)
+    );
+  }
+
   function isValidThreadResult(result) {
     const subcategory = result && TAXONOMY.subcategory(result.matrixId);
     return (
@@ -950,7 +1048,8 @@
       typeof result.fallback === "boolean" &&
       isValidChoice(result.subcategory, TAXONOMY.subcategories.map((s) => s.id)) &&
       isValidChoice(result.conversationType, Object.keys(CONVERSATION_TYPE_NAMES)) &&
-      isValidChoice(result.tone, Object.keys(THREAD_TONE_NAMES))
+      isValidChoice(result.tone, Object.keys(THREAD_TONE_NAMES)) &&
+      isValidScore(result.slop, SLOP_LEVELS)
     );
   }
 
@@ -971,7 +1070,8 @@
       !!result.constructive &&
       isUnitNumber(result.constructive.probability) &&
       !!result.needsAttention &&
-      isUnitNumber(result.needsAttention.probability)
+      isUnitNumber(result.needsAttention.probability) &&
+      isValidScore(result.slop, SLOP_LEVELS)
     );
   }
 
@@ -1176,7 +1276,8 @@
     const expanded = expandedIds.has(tweetId);
     const label = `${stateName(matrixId, entry.primary)} · ${percent(primaryState.probability)}%`;
     const details = expanded ? detailLines(result, entry, secondary) : [];
-    const signature = JSON.stringify([matrixId, entry.primary, tier, label, expanded, details]);
+    const slop = hasSlop(result) ? slopDisplay(result.slop) : null;
+    const signature = JSON.stringify([matrixId, entry.primary, tier, label, expanded, details, slop]);
     if (pill.className !== "jevx-reply") pill.className = "jevx-reply";
     if (pill.dataset.jevxTweet !== tweetId) pill.dataset.jevxTweet = tweetId;
     if (pill.title) pill.title = "";
@@ -1188,6 +1289,9 @@
       button.setAttribute("aria-expanded", String(expanded));
       button.append(swatch(matrixId, entry.primary), document.createTextNode(label));
       const children = [button];
+      // The score sits right of the state pill; the details panel below
+      // takes the whole row (flex-basis: 100%), so it stays last.
+      if (slop) children.push(updateSlopPill(slopPillElement(), result.slop, "the reply"));
       if (expanded) {
         const panel = document.createElement("span");
         panel.className = "jevx-details";
@@ -1404,6 +1508,8 @@
     const brand = element("span", "jevx-pulse__brand");
     brand.textContent = "Jev";
     const type = element("span", "jevx-pulse__type");
+    // The original post's AI-slop score, right of the post-type pill.
+    const slop = slopPillElement("jevx-pulse__slop");
     const summary = element("p", "jevx-pulse__summary");
     summary.setAttribute("aria-live", "polite");
     const toggle = element("button", "jevx-pulse__toggle");
@@ -1411,7 +1517,7 @@
     toggle.dataset.action = "details";
     toggle.setAttribute("aria-controls", detailsId);
     toggle.append(document.createTextNode("Details"), chevron());
-    head.append(brand, type, summary, toggle);
+    head.append(brand, type, slop, summary, toggle);
 
     const bar = element("div", "jevx-pulse__bar");
     bar.setAttribute("aria-hidden", "true"); // the legend below carries the same numbers as text
@@ -1528,6 +1634,7 @@
     }
     const part = (name) => pulse.querySelector(`.jevx-${name}`);
     const type = part("pulse__type");
+    const slop = part("pulse__slop");
     const summary = part("pulse__summary");
     const toggle = part("pulse__toggle");
     const bar = part("pulse__bar");
@@ -1543,7 +1650,7 @@
     const matrixId = currentMatrixId();
     const idle = context.status === "no_text" || !matrixId;
     pulse.toggleAttribute("data-jevx-idle", idle);
-    for (const el of [type, toggle, controls, details]) setHiddenAttr(el, idle);
+    for (const el of [type, slop, toggle, controls, details]) setHiddenAttr(el, idle);
     if (idle) {
       if (context.status === "no_text") {
         setText(summary, "Replies can't be analyzed: this post has no text to compare them against.");
@@ -1564,6 +1671,10 @@
       ? `${category.name}: post type unclear, replies use the ${subcategory.name} states`
       : `${category.name} › ${subcategory.name}`;
 
+    const showSlop = hasSlop(threadResult);
+    setHiddenAttr(slop, !showSlop);
+    if (showSlop) updateSlopPill(slop, threadResult.slop, "the post");
+
     const postType = !threadResult
       ? `Unavailable, using ${subcategory.name} states`
       : fallback
@@ -1577,6 +1688,9 @@
             ["Conversation", CONVERSATION_TYPE_NAMES[threadResult.conversationType.label]],
             ["Tone", THREAD_TONE_NAMES[threadResult.tone.label]],
           ]
+        : []),
+      ...(showSlop
+        ? [["AI slop score", `${slopDisplay(threadResult.slop).value} of 10 · ${slopDisplay(threadResult.slop).name}`]]
         : []),
     ];
     rebuildIfChanged(facts, JSON.stringify(factRows), () =>
@@ -1706,6 +1820,9 @@
   function applyPageSettings(settings) {
     if (isValidCutoff(settings.needsReplyCutoff)) globalCutoff = settings.needsReplyCutoff;
     if (typeof settings.conversationEnabled === "boolean") modeEnabled = settings.conversationEnabled;
+    // Display-only: nothing is re-requested, the next scan adds or drops the
+    // score pills on replies that are already classified.
+    if (typeof settings.slopEnabled === "boolean") slopEnabled = settings.slopEnabled;
   }
 
   // The on/off switch and the default cutoff live in extension storage,
